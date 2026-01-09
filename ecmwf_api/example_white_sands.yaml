@@ -1,0 +1,97 @@
+# Example YAML configuration for White Sands Missile Range, New Mexico
+# 
+# White Sands Missile Range is located in south-central New Mexico
+# Center coordinates: approximately 32.5°N, -106.3°W
+# Elevation: approximately 1200-1300 meters above sea level
+# 
+# This configuration demonstrates a complete setup for atmospheric simulation
+# over White Sands with a 150 km × 150 km horizontal domain and 10 km vertical extent.
+
+geometry:
+  # Must be cartesian type for atmospheric simulations
+  type: cartesian
+  
+  # Domain bounds in meters (includes ghost zones)
+  # x1 = Z direction (vertical, height above ground)
+  # x2 = Y direction (north-south distance)
+  # x3 = X direction (east-west distance)
+  bounds:
+    x1min: 0.0             # Ground level (meters)
+    x1max: 10000.0         # 10 km vertical extent (top of domain)
+    x2min: 0.0             # South edge (meters, including ghost)
+    x2max: 150000.0        # 150 km north-south extent (including ghost)
+    x3min: 0.0             # West edge (meters, including ghost)
+    x3max: 150000.0        # 150 km east-west extent (including ghost)
+  
+  # Grid cell configuration
+  # Total cells = interior cells + 2 × nghost in each direction
+  cells:
+    nx1: 100               # Interior cells in vertical direction
+    nx2: 300               # Interior cells in north-south direction
+    nx3: 300               # Interior cells in east-west direction
+    nghost: 3              # Number of ghost cells on each side
+  
+  # Geographic center of the computational domain
+  # White Sands Missile Range coordinates
+  center_latitude: 32.5    # degrees north
+  center_longitude: -106.3 # degrees (negative = west, positive = east)
+
+integration:
+  # Integration parameters for atmospheric model
+  # (Only start-date and end-date are used by the data fetching pipeline)
+  type: rk3                # Time integration method
+  cfl: 0.45                # CFL number for stability
+  implicit-scheme: 0       # Explicit time integration
+  nlim: -1                 # No step limit
+  tlim: 86400              # 1 day simulation time (seconds)
+  
+  # Date range for fetching ERA5 data (YYYY-MM-DD format)
+  # Example: January 1-2, 2024 (2 days of data)
+  start-date: 2024-01-01
+  end-date: 2024-01-02
+
+forcing:
+  # Gravity for hydrostatic balance calculations
+  # Note: grav1 is negative because gravity points downward
+  const-gravity:
+    grav1: -9.80665        # m/s² (Earth's standard gravity)
+
+# Expected pipeline output:
+# 
+# 1. Geographic bounds calculation:
+#    - Domain size: ~150 km × ~150 km (x2 × x3)
+#    - Center: 32.5°N, -106.3°W
+#    - Approximate bounds: ~31.8°N to ~33.2°N, ~-107.0° to ~-105.6°
+#    - With 10% buffer: ~31.7°N to ~33.3°N, ~-107.1° to ~-105.5°
+#
+# 2. Output directory name: e.g., 31.73N_33.27N_107.10W_105.50W/
+#
+# 3. Downloaded files:
+#    - era5_hourly_densities_20240101.nc
+#    - era5_hourly_densities_20240102.nc
+#    - era5_hourly_dynamics_20240101.nc
+#    - era5_hourly_dynamics_20240102.nc
+#
+# 4. After Step 2 (calculate_density.py):
+#    - era5_density_20240101.nc
+#    - era5_density_20240102.nc
+#
+# 5. After Step 3 (regrid_era5_to_cartesian.py):
+#    - regridded_era5.nc (Cartesian grid with ghost zones)
+#
+# 6. After Step 4 (compute_hydrostatic_pressure.py):
+#    - regridded_era5.nc (augmented with hydrostatic pressure field)
+#
+# Usage:
+#   Step 1: python fetch_era5_pipeline.py example_white_sands.yaml
+#   Step 2: python calculate_density.py --input-dir ./<output_dir> --output-dir ./<output_dir>
+#   Step 3: python regrid_era5_to_cartesian.py example_white_sands.yaml ./<output_dir> --output regridded_white_sands.nc
+#   Step 4: python compute_hydrostatic_pressure.py example_white_sands.yaml regridded_white_sands.nc
+#
+# Notes:
+# - White Sands is in the Chihuahuan Desert with generally dry conditions
+# - Elevation ~1200-1300 m means surface pressure is typically around 870-880 hPa
+# - Winter (January) temperatures are mild with occasional cold fronts
+# - Summer features strong convection and North American Monsoon moisture
+# - The 150 km domain captures mesoscale features and boundary layer processes
+# - 10 km vertical extent covers troposphere and lower stratosphere

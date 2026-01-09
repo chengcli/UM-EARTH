@@ -1,0 +1,106 @@
+# Example YAML configuration for Ann Arbor, Michigan
+# 
+# Ann Arbor is located in southeastern Michigan
+# Center coordinates: approximately 42.3°N, -83.7°W
+# Elevation: approximately 260-300 meters above sea level
+# 
+# This configuration demonstrates atmospheric simulation setup for Ann Arbor
+# with a 100 km × 100 km horizontal domain (minimum recommended) and 15 km vertical extent.
+
+geometry:
+  # Must be cartesian type for atmospheric simulations
+  type: cartesian
+  
+  # Domain bounds in meters (includes ghost zones)
+  # x1 = Z direction (vertical, height above ground)
+  # x2 = Y direction (north-south distance)
+  # x3 = X direction (east-west distance)
+  bounds:
+    x1min: 0.0             # Ground level (meters)
+    x1max: 15000.0         # 15 km vertical extent (top of domain)
+    x2min: 0.0             # South edge (meters, including ghost)
+    x2max: 100000.0        # 100 km north-south extent (including ghost)
+    x3min: 0.0             # West edge (meters, including ghost)
+    x3max: 100000.0        # 100 km east-west extent (including ghost)
+  
+  # Grid cell configuration
+  # Total cells = interior cells + 2 × nghost in each direction
+  cells:
+    nx1: 150               # Interior cells in vertical direction
+    nx2: 200               # Interior cells in north-south direction
+    nx3: 200               # Interior cells in east-west direction
+    nghost: 3              # Number of ghost cells on each side
+  
+  # Geographic center of the computational domain
+  # Ann Arbor, Michigan coordinates (University of Michigan campus)
+  center_latitude: 42.3    # degrees north
+  center_longitude: -83.7  # degrees (negative = west, positive = east)
+
+integration:
+  # Integration parameters for atmospheric model
+  # (Only start-date and end-date are used by the data fetching pipeline)
+  type: rk3                # Time integration method
+  cfl: 0.45                # CFL number for stability
+  implicit-scheme: 0       # Explicit time integration
+  nlim: -1                 # No step limit
+  tlim: 43200              # 12 hour simulation time (seconds)
+  
+  # Date range for fetching ERA5 data (YYYY-MM-DD format)
+  # Example: June 1-3, 2024 (3 days of data, summer conditions)
+  start-date: 2024-06-01
+  end-date: 2024-06-03
+
+forcing:
+  # Gravity for hydrostatic balance calculations
+  # Note: grav1 is negative because gravity points downward
+  const-gravity:
+    grav1: -9.80665        # m/s² (Earth's standard gravity)
+
+# Expected pipeline output:
+# 
+# 1. Geographic bounds calculation:
+#    - Domain size: ~100 km × ~100 km (x2 × x3)
+#    - Center: 42.3°N, -83.7°
+#    - Approximate bounds: ~41.8°N to ~42.8°N, ~-84.2° to ~-83.2°
+#    - With 10% buffer: ~41.75°N to ~42.85°N, ~-84.25° to ~-83.15°
+#
+# 2. Output directory name: e.g., 41.75N_42.85N_84.25W_83.15W/
+#
+# 3. Downloaded files:
+#    - era5_hourly_densities_20240601.nc
+#    - era5_hourly_densities_20240602.nc
+#    - era5_hourly_densities_20240603.nc
+#    - era5_hourly_dynamics_20240601.nc
+#    - era5_hourly_dynamics_20240602.nc
+#    - era5_hourly_dynamics_20240603.nc
+#
+# 4. After Step 2 (calculate_density.py):
+#    - era5_density_20240601.nc
+#    - era5_density_20240602.nc
+#    - era5_density_20240603.nc
+#
+# 5. After Step 3 (regrid_era5_to_cartesian.py):
+#    - regridded_era5.nc (Cartesian grid with ghost zones)
+#
+# 6. After Step 4 (compute_hydrostatic_pressure.py):
+#    - regridded_era5.nc (augmented with hydrostatic pressure field)
+#
+# Usage:
+#   Step 1: python fetch_era5_pipeline.py example_ann_arbor.yaml
+#   Step 2: python calculate_density.py --input-dir ./<output_dir> --output-dir ./<output_dir>
+#   Step 3: python regrid_era5_to_cartesian.py example_ann_arbor.yaml ./<output_dir> --output regridded_ann_arbor.nc
+#   Step 4: python compute_hydrostatic_pressure.py example_ann_arbor.yaml regridded_ann_arbor.nc
+#
+# Notes:
+# - Ann Arbor has a humid continental climate with four distinct seasons
+# - Elevation ~260-300 m means surface pressure is typically around 980-990 hPa
+# - Summer (June) features warm temperatures, high humidity, and convective storms
+# - Winter brings lake-effect snow from nearby Lake Erie and Lake Huron
+# - Spring and fall have highly variable weather with frequent frontal passages
+# - The 100 km domain captures local mesoscale features and lake influences
+# - 15 km vertical extent covers the full troposphere for mid-latitude systems
+# - This domain is suitable for studying:
+#   * Lake-effect precipitation events
+#   * Convective initiation and storm development
+#   * Urban heat island effects (Detroit metro area to the east)
+#   * Synoptic-scale weather systems affecting the Great Lakes region

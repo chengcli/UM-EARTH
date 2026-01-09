@@ -1,0 +1,54 @@
+# Example YAML configuration for ECMWF data fetching pipeline
+# This configuration demonstrates how to set up a domain for atmospheric simulation
+
+geometry:
+  # Must be cartesian type
+  type: cartesian
+  
+  # Domain bounds in meters (includes ghost zones)
+  # x1 = Z direction (vertical)
+  # x2 = Y direction (north-south)
+  # x3 = X direction (east-west)
+  # NOTE: Horizontal domain size must be at least 100 km (1 degree) in both directions
+  bounds:
+    x1min: 0.
+    x1max: 10.e3      # 10 km vertical extent
+    x2min: 0.
+    x2max: 150.e3     # 150 km north-south extent (minimum 100 km required)
+    x3min: 0.
+    x3max: 150.e3     # 150 km east-west extent (minimum 100 km required)
+  
+  # Grid cell configuration
+  cells:
+    nx1: 100          # Interior cells in Z direction
+    nx2: 300          # Interior cells in Y direction
+    nx3: 150          # Interior cells in X direction
+    nghost: 3         # Number of ghost cells on each side
+  
+  # Geographic center of the computational domain
+  center_latitude: 30.
+  center_longitude: -110.
+
+integration:
+  # Integration parameters (other fields like type, cfl, etc. are ignored by the pipeline)
+  type: rk3
+  cfl: 0.45
+  implicit-scheme: 0
+  nlim: -1
+  tlim: 8640
+  
+  # Date range for fetching ERA5 data (YYYY-MM-DD format)
+  start-date: 2024-01-01
+  end-date: 2024-01-02
+
+# The pipeline will:
+# 1. Calculate lat-lon limits: approximately 29.33°N to 30.67°N, 110.78°W to 109.22°W
+# 2. Validate domain size (must be at least 100 km / 1 degree in both directions)
+# 3. Add 10% buffer: approximately 29.19°N to 30.81°N, 110.93°W to 109.07°W
+# 4. Create output directory: 29.19N_30.81N_110.93W_109.07W/
+# 5. Fetch ERA5 densities and dynamics data for both days
+# 6. Save files as:
+#    - era5_hourly_densities_20240101.nc
+#    - era5_hourly_densities_20240102.nc
+#    - era5_hourly_dynamics_20240101.nc
+#    - era5_hourly_dynamics_20240102.nc
