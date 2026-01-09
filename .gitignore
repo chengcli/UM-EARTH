@@ -5,3 +5,6 @@ __pycache__/
 
 # yaml files
 *.yaml
+
+# outputs
+*.N_*.N_*.W_*.W/
