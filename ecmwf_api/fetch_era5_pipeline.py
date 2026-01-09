@@ -412,7 +412,7 @@ def fetch_era5_data(latmin: float, latmax: float, lonmin: float, lonmax: float,
         result = subprocess.run(densities_cmd, check=True, capture_output=False, text=True)
         print("\n\033[92m[OK]\033[0m Densities data fetch completed successfully")
     except subprocess.CalledProcessError as e:
-        print(f"\n\033[92m[ERROR]\033[0m Densities data fetch failed: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m Densities data fetch failed: {e}")
         raise RuntimeError(f"Failed to fetch densities data: {e}")
     
     # Fetch dynamics data

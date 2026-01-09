@@ -212,12 +212,12 @@ def main():
         print("=" * 70)
         
     except ValueError as e:
-        print(f"\n\033[92m[ERROR]\033[0m {e}")
+        print(f"\n\033[91m[ERROR]\033[0m {e}")
         print("\nPlease check your input parameters and try again.")
         sys.exit(1)
     
     except RuntimeError as e:
-        print(f"\n\033[92m[ERROR]\033[0m {e}")
+        print(f"\n\033[91m[ERROR]\033[0m {e}")
         print("\nData retrieval failed. This could be due to:")
         print("  - Invalid CDS API credentials")
         print("  - Network connectivity issues")
@@ -227,7 +227,7 @@ def main():
         sys.exit(1)
     
     except Exception as e:
-        print(f"\n\033[92m[ERROR]\033[0m Unexpected error: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m Unexpected error: {e}")
         sys.exit(1)
 
 
