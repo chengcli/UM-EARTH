@@ -1,0 +1,135 @@
+# Earth Atmospheric Simulation Configuration Template
+# 
+# This template is used to generate location-specific configuration files.
+# Placeholders (in {braces}) are replaced by the config generator script.
+#
+# Location: {location_name}
+# Description: {location_description}
+# Center coordinates: {center_latitude}°N, {center_longitude}°W/E
+# Domain: {x2_extent_km} km × {x3_extent_km} km horizontal, {x1_max_km} km vertical
+# Time window: {start_date} to {end_date}
+
+geometry:
+  # Must be cartesian type for atmospheric simulations
+  type: cartesian
+  
+  # Domain bounds in meters (includes ghost zones)
+  # x1 = Z direction (vertical, height above ground)
+  # x2 = Y direction (north-south distance)
+  # x3 = X direction (east-west distance)
+  bounds:
+    x1min: 0.0             # Ground level (meters)
+    x1max: {x1_max}        # Vertical extent (top of domain)
+    x2min: 0.0             # South edge (meters, including ghost)
+    x2max: {x2_extent}     # North-south extent (including ghost)
+    x3min: 0.0             # West edge (meters, including ghost)
+    x3max: {x3_extent}     # East-west extent (including ghost)
+  
+  # Grid cell configuration
+  # Total cells = interior cells + 2 × nghost in each direction
+  cells:
+    nx1: {nx1}             # Interior cells in vertical direction
+    nx2: {nx2}             # Interior cells in north-south direction
+    nx3: {nx3}             # Interior cells in east-west direction
+    nghost: {nghost}       # Number of ghost cells on each side
+  
+  # Geographic center of the computational domain
+  center_latitude: {center_latitude}    # degrees north
+  center_longitude: {center_longitude}  # degrees (negative = west, positive = east)
+
+distribute:
+  backend: nccl
+  layout: slab
+  nb2: 1
+  nb3: 1
+  verbose: false
+
+dynamics:
+  equation-of-state:
+    type: ideal-moist
+    density-floor:  1.e-10
+    pressure-floor: 1.e-10
+    tracer-floor: 1.e-10
+    limiter: true
+    max-iter: 20
+    ftol: 1.e-6
+
+  vertical-projection:
+    type: temperature
+    pressure-margin: 1.e-6
+
+  reconstruct:
+    vertical: {type: weno5, scale: true, shock: true}
+    horizontal: {type: weno5, scale: true, shock: true}
+
+  riemann-solver:
+    type: hllc
+
+boundary-condition:
+  external:
+    x1-inner: reflecting
+    x1-outer: reflecting
+    x2-inner: periodic
+    x2-outer: periodic
+    x3-inner: periodic
+    x3-outer: periodic
+
+integration:
+  # Integration parameters for atmospheric model
+  # (Only start-date and end-date are used by the data fetching pipeline)
+  type: rk3                # Time integration method
+  cfl: 0.45                # CFL number for stability
+  implicit-scheme: 0       # Explicit time integration
+  nlim: -1                 # No step limit
+  tlim: {tlim}             # Simulation time (seconds)
+  
+  # Date for fetching ERA5 data (YYYY-MM-DD format)
+  start-date: {start_date}
+  end-date: {end_date}
+
+outputs:
+  - type: restart
+    dt: 10.E5
+  - type: netcdf
+    variables: [prim, uov]
+    dt: 1.E4
+  - type: netcdf
+    variables: [thermo, path]
+    dt: 1.E4
+
+forcing:
+  # Gravity for hydrostatic balance calculations
+  # Note: grav1 is negative because gravity points downward
+  const-gravity:
+    grav1: -9.80665        # m/s² (Earth's standard gravity)
+
+  top-sponge-lyr:
+    tau: 1.e4
+    width: 10.e3
+
+  bot-sponge-lyr:
+    tau: 1.e5
+    width: 10.e3
+
+sedimentation:
+  radius:
+    H2O(l,p): 1.0e-10
+
+  density:
+    H2O(l,p): 1000.
+
+  const-vsed:
+    H2O(l,p): -50.0
+
+reactions:
+  - equation: H2O <=> H2O(l)
+    type: nucleation
+    rate-constant: {formula: h2o_ideal}
+
+  - equation: H2O(l) => H2O(l,p)
+    type: coagulation
+    rate-constant: {A: 1.e-5, b: 0, Ea_R: 0.}
+
+  - equation: H2O(l,p) => H2O
+    type: evaporation
+    rate-constant: {formula: h2o_ideal, diff_c: 0.2e-4, diff_T: 0., diff_P: 0., vm: 18.e-6, diameter: 1.0e-3}
