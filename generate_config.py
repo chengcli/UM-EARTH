@@ -436,12 +436,12 @@ def main():
     # Write configuration file
     try:
         output_file.write_text(config)
-        print(f"✓ Configuration file generated: {output_file}")
+        print(f"\033[92m[OK]\033[0m Configuration file generated: {output_file}")
         print(f"  Location: {locations[location_id]['name']}")
         print(f"  Time window: {args.start_date} to {args.end_date}")
         print(f"  Grid: {args.nx1} × {args.nx2} × {args.nx3} cells")
     except Exception as e:
-        print(f"ERROR: Failed to write output file: {e}")
+        print(f"\033[91m[ERROR]\033[0m Failed to write output file: {e}")
         return 1
     
     return 0
