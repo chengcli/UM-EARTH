@@ -133,7 +133,7 @@ def main():
         # Initialize the API
         api = ECMWFWeatherAPI(api_key=args.api_key, api_url=args.api_url)
         
-        print("✓ API initialized successfully")
+        print("\033[92m[OK]\033[0m API initialized successfully")
         
         # Define density-related variables to download
         # These are the official ECMWF ERA5 variable names
@@ -207,12 +207,12 @@ def main():
         print("=" * 70)
         
     except ValueError as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m {e}")
         print("\nPlease check your input parameters and try again.")
         sys.exit(1)
     
     except RuntimeError as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m {e}")
         print("\nData retrieval failed. This could be due to:")
         print("  - Invalid CDS API credentials")
         print("  - Network connectivity issues")
@@ -222,7 +222,7 @@ def main():
         sys.exit(1)
     
     except Exception as e:
-        print(f"\n✗ Unexpected error: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m Unexpected error: {e}")
         sys.exit(1)
 
 

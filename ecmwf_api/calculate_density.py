@@ -198,7 +198,7 @@ def load_netcdf_data(dynamics_file: str, densities_file: str) -> Dict:
         # Store global attributes
         data['densities_attrs'] = {attr: ds.getncattr(attr) for attr in ds.ncattrs()}
     
-    print(f"✓ Data loaded successfully")
+    print(f"\033[92m[OK]\033[0m Data loaded successfully")
     print(f"  Temperature shape: {data['temperature'].shape}")
     print(f"  Specific humidity shape: {data['q'].shape}")
     
@@ -247,7 +247,7 @@ def calculate_total_density(data: Dict) -> Tuple:
         temperature, pressure_pa, q, cloud_content
     )
     
-    print(f"✓ Density calculation completed")
+    print(f"\033[92m[OK]\033[0m Density calculation completed")
     print(f"  Total density shape: {rho_total.shape}")
     print(f"  Total density range: [{np.min(rho_total):.6f}, {np.max(rho_total):.6f}] kg/m³")
     print(f"  Dry air density range: [{np.min(rho_d):.6f}, {np.max(rho_d):.6f}] kg/m³")
@@ -371,7 +371,7 @@ def save_density_netcdf(output_file: str, data: Dict, rho_total, rho_d, rho_v, r
         ds.dry_air_molecular_weight = f'{M_DRY} kg/mol'
         ds.water_vapor_molecular_weight = f'{M_VAPOR} kg/mol'
     
-    print(f"✓ Density data saved successfully")
+    print(f"\033[92m[OK]\033[0m Density data saved successfully")
 
 
 def process_single_date(dynamics_file: str, densities_file: str, output_file: str) -> None:
@@ -429,7 +429,7 @@ def process_directory(input_dir: str, output_dir: str) -> None:
     dynamics_files = sorted(glob.glob(dynamics_pattern))
     
     if not dynamics_files:
-        print(f"\n✗ No dynamics files found matching pattern: {dynamics_pattern}")
+        print(f"\n\033[91m[ERROR]\033[0m No dynamics files found matching pattern: {dynamics_pattern}")
         sys.exit(1)
     
     print(f"\nFound {len(dynamics_files)} dynamics file(s)")
@@ -450,7 +450,7 @@ def process_directory(input_dir: str, output_dir: str) -> None:
         densities_file = os.path.join(input_dir, f'era5_hourly_densities_{date_str}.nc')
         
         if not os.path.exists(densities_file):
-            print(f"\n✗ Skipping {date_str}: densities file not found: {densities_file}")
+            print(f"\n\033[91m[ERROR]\033[0m Skipping {date_str}: densities file not found: {densities_file}")
             failed += 1
             continue
         
@@ -463,7 +463,7 @@ def process_directory(input_dir: str, output_dir: str) -> None:
             process_single_date(dynamics_file, densities_file, output_file)
             processed += 1
         except Exception as e:
-            print(f"\n✗ Failed to process {date_str}: {e}")
+            print(f"\n\033[91m[ERROR]\033[0m Failed to process {date_str}: {e}")
             failed += 1
     
     # Summary
@@ -549,19 +549,19 @@ The script solves three linear equations to calculate:
             process_directory(args.input_dir, args.output_dir)
         
     except FileNotFoundError as e:
-        print(f"\n✗ File not found: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m File not found: {e}")
         sys.exit(1)
     
     except ValueError as e:
-        print(f"\n✗ Value error: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m Value error: {e}")
         sys.exit(1)
     
     except ImportError as e:
-        print(f"\n✗ Import error: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m Import error: {e}")
         sys.exit(1)
     
     except Exception as e:
-        print(f"\n✗ Unexpected error: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m Unexpected error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

@@ -410,9 +410,9 @@ def fetch_era5_data(latmin: float, latmax: float, lonmin: float, lonmax: float,
     
     try:
         result = subprocess.run(densities_cmd, check=True, capture_output=False, text=True)
-        print("\n✓ Densities data fetch completed successfully")
+        print("\n\033[92m[OK]\033[0m Densities data fetch completed successfully")
     except subprocess.CalledProcessError as e:
-        print(f"\n✗ Densities data fetch failed: {e}")
+        print(f"\n\033[92m[ERROR]\033[0m Densities data fetch failed: {e}")
         raise RuntimeError(f"Failed to fetch densities data: {e}")
     
     # Fetch dynamics data
@@ -434,9 +434,9 @@ def fetch_era5_data(latmin: float, latmax: float, lonmin: float, lonmax: float,
     
     try:
         result = subprocess.run(dynamics_cmd, check=True, capture_output=False, text=True)
-        print("\n✓ Dynamics data fetch completed successfully")
+        print("\n\033[92m[OK]\033[0m Dynamics data fetch completed successfully")
     except subprocess.CalledProcessError as e:
-        print(f"\n✗ Dynamics data fetch failed: {e}")
+        print(f"\n\033[91m[ERROR]\033[0m Dynamics data fetch failed: {e}")
         raise RuntimeError(f"Failed to fetch dynamics data: {e}")
 
 
@@ -505,7 +505,7 @@ The script will:
         # Validate domain size
         print("\nValidating domain size...")
         validate_domain_size(latmin, latmax, lonmin, lonmax, min_size_degrees=1.0)
-        print(f"  ✓ Domain size validation passed")
+        print(f"  \033[92m[OK]\033[0m Domain size validation passed")
         
         # Add buffer zone
         print("\nAdding 10% buffer zone...")

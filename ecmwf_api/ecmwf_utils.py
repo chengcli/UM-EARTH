@@ -229,9 +229,9 @@ def fetch_single_day(api,
             times=times
         )
         
-        print(f"[{day_idx+1}/{total_days}] ✓ Completed {date_str} -> {os.path.basename(output_file)}")
+        print(f"\033[92m[OK]\033[0m [{day_idx+1}/{total_days}] Completed {date_str} -> {os.path.basename(output_file)}")
         return output_file
     
     except Exception as e:
-        print(f"[{day_idx+1}/{total_days}] ✗ Failed {date_str}: {e}")
+        print(f"\033[92m[ERROR]\033[0m [{day_idx+1}/{total_days}] Failed {date_str}: {e}")
         return None
