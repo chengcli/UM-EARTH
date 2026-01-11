@@ -26,11 +26,10 @@ This shows all configured locations with their geographic bounds and calculated 
 Required parameters (horizontal extents calculated automatically from polygon):
 
 ```bash
-# Generate config for Ann Arbor (x2/x3 extents calculated from polygon)
-python generate_config.py ann-arbor \
+# Generate config for White Sands Site 1(x2/x3 extents calculated from polygon)
+python generate_config.py ws-site1 \
     --start-date 2025-11-01 --end-date 2025-11-02 \
-    --nx1 150 --nx2 200 --nx3 200 \
-    --output ann-arbor.yaml
+    --nx1 150 --nx2 200 --nx3 200
 
 # Generate config for White Sands (x2/x3 extents calculated from polygon)
 python generate_config.py white-sands \
@@ -51,7 +50,7 @@ python generate_config.py ann-arbor \
 
 ```bash
 # Download Ann Arbor data (uses ann-arbor.yaml)
-python prepare_initial_condition.py ann-arbor
+python prepare_initial_condition.py ws-site1
 
 # Download White Sands data (uses white_sands/white_sands.yaml)
 python prepare_initial_condition.py white-sands

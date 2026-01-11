@@ -119,7 +119,7 @@ sedimentation:
     H2O(l,p): 1000.
 
   const-vsed:
-    H2O(l,p): -50.0
+    H2O(l,p): -10.0
 
 reactions:
   - equation: H2O <=> H2O(l)
