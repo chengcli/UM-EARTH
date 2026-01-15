@@ -45,6 +45,18 @@ class TestTopographyData(unittest.TestCase):
         self.assertIn("shape", repr_str)
         self.assertIn("lat", repr_str)
         self.assertIn("lon", repr_str)
+    
+    def test_shape_validation(self):
+        """Test that shape validation works correctly."""
+        data = np.random.rand(10, 20)
+        
+        # This should work
+        topo = TopographyData(data, (30.0, 40.0), (-120.0, -110.0), 10, 20)
+        self.assertEqual(topo.data.shape, (10, 20))
+        
+        # This should fail - shape mismatch
+        with self.assertRaises(ValueError):
+            TopographyData(data, (30.0, 40.0), (-120.0, -110.0), 15, 20)
 
 
 class TestGetTopography(unittest.TestCase):

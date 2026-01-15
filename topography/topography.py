@@ -55,7 +55,15 @@ class TopographyData:
             lon_bounds: (min_lon, max_lon)
             nlat: Number of cells in latitude dimension
             nlon: Number of cells in longitude dimension
+            
+        Raises:
+            ValueError: If data shape doesn't match nlat/nlon
         """
+        if data.shape != (nlat, nlon):
+            raise ValueError(
+                f"Data shape {data.shape} doesn't match dimensions ({nlat}, {nlon})"
+            )
+        
         self.data = data
         self.lat_bounds = lat_bounds
         self.lon_bounds = lon_bounds
@@ -132,8 +140,29 @@ def _save_to_cache(topo_data: TopographyData, cache_path: str) -> None:
         topo_data: TopographyData object to cache
         cache_path: Path to cache file
     """
-    with open(cache_path, 'wb') as f:
-        pickle.dump(topo_data, f)
+    try:
+        with open(cache_path, 'wb') as f:
+            pickle.dump(topo_data, f)
+    except (OSError, IOError) as e:
+        # If caching fails, silently continue (caching is optional)
+        pass
+
+
+def _get_random_seed(lat_bounds: Tuple[float, float], lon_bounds: Tuple[float, float]) -> int:
+    """
+    Generate a deterministic random seed from geographic bounds.
+    
+    Args:
+        lat_bounds: (min_lat, max_lat)
+        lon_bounds: (min_lon, max_lon)
+        
+    Returns:
+        Random seed as integer
+    """
+    min_lat, max_lat = lat_bounds
+    min_lon, max_lon = lon_bounds
+    seed_str = f"{min_lat}{max_lat}{min_lon}{max_lon}"
+    return int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
 
 
 def _download_srtm_data(
@@ -199,7 +228,7 @@ def _download_srtm_data(
         base_elevation += 300 * np.sin(np.radians(lon_mesh * 2))
         
         # Add noise for realistic variation
-        np.random.seed(int(hashlib.md5(f"{min_lat}{max_lat}{min_lon}{max_lon}".encode()).hexdigest(), 16) % (2**32))
+        np.random.seed(_get_random_seed(lat_bounds, lon_bounds))
         noise = np.random.randn(nlat, nlon) * 100
         
         elevation = base_elevation + noise
@@ -219,7 +248,7 @@ def _download_srtm_data(
         base_elevation = 500 + 1000 * np.abs(np.sin(np.radians(lat_mesh)))
         base_elevation += 300 * np.sin(np.radians(lon_mesh * 2))
         
-        np.random.seed(int(hashlib.md5(f"{min_lat}{max_lat}{min_lon}{max_lon}".encode()).hexdigest(), 16) % (2**32))
+        np.random.seed(_get_random_seed(lat_bounds, lon_bounds))
         noise = np.random.randn(nlat, nlon) * 100
         
         elevation = base_elevation + noise
