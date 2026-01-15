@@ -165,6 +165,52 @@ def _get_random_seed(lat_bounds: Tuple[float, float], lon_bounds: Tuple[float, f
     return int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
 
 
+def _generate_synthetic_topography(
+    lat_bounds: Tuple[float, float],
+    lon_bounds: Tuple[float, float],
+    nlat: int,
+    nlon: int
+) -> np.ndarray:
+    """
+    Generate synthetic topography data.
+    
+    This is used as a fallback when real data cannot be downloaded, or for
+    demonstration purposes.
+    
+    Args:
+        lat_bounds: (min_lat, max_lat)
+        lon_bounds: (min_lon, max_lon)
+        nlat: Number of cells in latitude
+        nlon: Number of cells in longitude
+        
+    Returns:
+        2D numpy array of synthetic elevation data
+    """
+    min_lat, max_lat = lat_bounds
+    min_lon, max_lon = lon_bounds
+    
+    lat_grid = np.linspace(min_lat, max_lat, nlat)
+    lon_grid = np.linspace(min_lon, max_lon, nlon)
+    lat_mesh, lon_mesh = np.meshgrid(lat_grid, lon_grid, indexing='ij')
+    
+    # Base elevation with latitude gradient (higher at poles)
+    base_elevation = 500 + 1000 * np.abs(np.sin(np.radians(lat_mesh)))
+    
+    # Add longitude variation
+    base_elevation += 300 * np.sin(np.radians(lon_mesh * 2))
+    
+    # Add noise for realistic variation
+    np.random.seed(_get_random_seed(lat_bounds, lon_bounds))
+    noise = np.random.randn(nlat, nlon) * 100
+    
+    elevation = base_elevation + noise
+    
+    # Ensure non-negative elevations for land
+    elevation = np.maximum(elevation, 0)
+    
+    return elevation
+
+
 def _download_srtm_data(
     lat_bounds: Tuple[float, float],
     lon_bounds: Tuple[float, float],
@@ -214,47 +260,11 @@ def _download_srtm_data(
         # we'll generate synthetic data based on a simple elevation model
         # This is a placeholder that simulates realistic topography
         
-        # Generate elevation data with some realistic variation
-        lat_grid = np.linspace(min_lat, max_lat, nlat)
-        lon_grid = np.linspace(min_lon, max_lon, nlon)
-        
-        # Create synthetic topography with gradients and noise
-        lat_mesh, lon_mesh = np.meshgrid(lat_grid, lon_grid, indexing='ij')
-        
-        # Base elevation with latitude gradient (higher at poles)
-        base_elevation = 500 + 1000 * np.abs(np.sin(np.radians(lat_mesh)))
-        
-        # Add longitude variation
-        base_elevation += 300 * np.sin(np.radians(lon_mesh * 2))
-        
-        # Add noise for realistic variation
-        np.random.seed(_get_random_seed(lat_bounds, lon_bounds))
-        noise = np.random.randn(nlat, nlon) * 100
-        
-        elevation = base_elevation + noise
-        
-        # Ensure non-negative elevations for land
-        elevation = np.maximum(elevation, 0)
-        
-        return elevation
+        return _generate_synthetic_topography(lat_bounds, lon_bounds, nlat, nlon)
         
     except requests.RequestException as e:
         # If download fails, generate synthetic data as fallback
-        lat_grid = np.linspace(min_lat, max_lat, nlat)
-        lon_grid = np.linspace(min_lon, max_lon, nlon)
-        lat_mesh, lon_mesh = np.meshgrid(lat_grid, lon_grid, indexing='ij')
-        
-        # Generate synthetic topography
-        base_elevation = 500 + 1000 * np.abs(np.sin(np.radians(lat_mesh)))
-        base_elevation += 300 * np.sin(np.radians(lon_mesh * 2))
-        
-        np.random.seed(_get_random_seed(lat_bounds, lon_bounds))
-        noise = np.random.randn(nlat, nlon) * 100
-        
-        elevation = base_elevation + noise
-        elevation = np.maximum(elevation, 0)
-        
-        return elevation
+        return _generate_synthetic_topography(lat_bounds, lon_bounds, nlat, nlon)
 
 
 def get_topography(
