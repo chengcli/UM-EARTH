@@ -84,6 +84,9 @@ def _get_cache_key(
     """
     Generate a unique cache key for the given parameters.
     
+    Uses 6 decimal places for lat/lon coordinates, providing ~0.1 meter precision
+    at the equator, which is sufficient for topography data caching.
+    
     Args:
         lat_bounds: (min_lat, max_lat)
         lon_bounds: (min_lon, max_lon)
@@ -91,7 +94,7 @@ def _get_cache_key(
         nlon: Number of cells in longitude
         
     Returns:
-        Cache key string
+        Cache key string (MD5 hash)
     """
     key_str = f"{lat_bounds[0]:.6f}_{lat_bounds[1]:.6f}_{lon_bounds[0]:.6f}_{lon_bounds[1]:.6f}_{nlat}_{nlon}"
     return hashlib.md5(key_str.encode()).hexdigest()
@@ -120,14 +123,17 @@ def _load_from_cache(cache_path: str) -> Optional[TopographyData]:
         cache_path: Path to cache file
         
     Returns:
-        TopographyData if cache exists, None otherwise
+        TopographyData if cache exists and is valid, None otherwise
     """
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'rb') as f:
-                return pickle.load(f)
-        except Exception:
-            # If cache is corrupted, return None
+                data = pickle.load(f)
+                # Validate that loaded data is the expected type
+                if isinstance(data, TopographyData):
+                    return data
+        except (pickle.UnpicklingError, AttributeError, EOFError, ImportError, IndexError):
+            # If cache is corrupted or invalid, return None
             return None
     return None
 
@@ -143,8 +149,9 @@ def _save_to_cache(topo_data: TopographyData, cache_path: str) -> None:
     try:
         with open(cache_path, 'wb') as f:
             pickle.dump(topo_data, f)
-    except (OSError, IOError) as e:
-        # If caching fails, silently continue (caching is optional)
+    except (OSError, IOError):
+        # If caching fails (e.g., disk full, permission denied), silently continue
+        # Caching is optional and shouldn't break the main functionality
         pass
 
 
@@ -235,36 +242,18 @@ def _download_srtm_data(
     min_lat, max_lat = lat_bounds
     min_lon, max_lon = lon_bounds
     
-    # OpenTopography SRTM API endpoint
-    # Using SRTMGL3 (90m resolution) as fallback since SRTMGL1 requires API key
-    base_url = "https://portal.opentopography.org/API/globaldem"
+    # Note: This implementation uses synthetic topography data for demonstration.
+    # In production, you would:
+    # 1. Use OpenTopography SRTM API with proper authentication
+    # 2. Parse the returned GeoTIFF using rasterio or GDAL
+    # 3. Resample to the requested resolution
     
-    params = {
-        'demtype': 'SRTMGL3',  # 90m resolution SRTM data
-        'south': min_lat,
-        'north': max_lat,
-        'west': min_lon,
-        'east': max_lon,
-        'outputFormat': 'GTiff',
-    }
+    # OpenTopography SRTM API endpoint (for reference)
+    # base_url = "https://portal.opentopography.org/API/globaldem"
+    # params = {'demtype': 'SRTMGL3', ...}
     
-    try:
-        response = requests.get(base_url, params=params, timeout=60)
-        response.raise_for_status()
-        
-        # Parse GeoTIFF data
-        # For this implementation, we'll use a simpler approach
-        # In production, you would use rasterio or GDAL to parse the GeoTIFF
-        
-        # Since we can't easily parse GeoTIFF without additional dependencies,
-        # we'll generate synthetic data based on a simple elevation model
-        # This is a placeholder that simulates realistic topography
-        
-        return _generate_synthetic_topography(lat_bounds, lon_bounds, nlat, nlon)
-        
-    except requests.RequestException as e:
-        # If download fails, generate synthetic data as fallback
-        return _generate_synthetic_topography(lat_bounds, lon_bounds, nlat, nlon)
+    # For now, return synthetic topography data
+    return _generate_synthetic_topography(lat_bounds, lon_bounds, nlat, nlon)
 
 
 def get_topography(
