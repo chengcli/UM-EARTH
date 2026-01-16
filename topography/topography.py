@@ -341,20 +341,24 @@ def split(
     topo_data: TopographyData,
     method: Literal['linear', 'cubic'] = 'linear',
     cache_dir: str = DEFAULT_CACHE_DIR,
-    use_cache: bool = True
+    use_cache: bool = True,
+    try_download: bool = True
 ) -> TopographyData:
     """
-    Increase resolution by a factor of 2 using interpolation.
+    Increase resolution by a factor of 2.
     
-    This function doubles the number of cells in each dimension. If higher
-    resolution data is available in the cache, it will be used. Otherwise,
-    interpolation is applied.
+    This function doubles the number of cells in each dimension. The resolution
+    increase follows this priority:
+    1. Check cache for higher resolution data
+    2. If try_download=True, attempt to download higher resolution data from internet
+    3. Fall back to interpolation if download is disabled or fails
     
     Args:
         topo_data: TopographyData object to increase resolution
-        method: Interpolation method ('linear' or 'cubic')
+        method: Interpolation method ('linear' or 'cubic') used if download fails
         cache_dir: Directory for caching downloaded data
         use_cache: Whether to use cached data if available
+        try_download: Whether to attempt downloading higher resolution data from internet
         
     Returns:
         TopographyData with doubled resolution
@@ -364,9 +368,12 @@ def split(
         
     Example:
         >>> topo_low = get_topography((30, 40), (-120, -110), 50, 50)
-        >>> topo_high = split(topo_low, method='cubic')
+        >>> # Try to download higher resolution data
+        >>> topo_high = split(topo_low, method='cubic', try_download=True)
         >>> print(topo_high.data.shape)
         (100, 100)
+        >>> # Force interpolation without trying to download
+        >>> topo_high_interp = split(topo_low, method='cubic', try_download=False)
     """
     if method not in ['linear', 'cubic']:
         raise ValueError("method must be 'linear' or 'cubic'")
@@ -389,7 +396,36 @@ def split(
         if cached_data is not None:
             return cached_data
     
-    # Perform interpolation
+    # Try to download higher resolution data from internet if requested
+    if try_download:
+        try:
+            elevation_data = _download_srtm_data(
+                topo_data.lat_bounds,
+                topo_data.lon_bounds,
+                new_nlat,
+                new_nlon
+            )
+            
+            # Create TopographyData object from downloaded data
+            new_topo_data = TopographyData(
+                data=elevation_data,
+                lat_bounds=topo_data.lat_bounds,
+                lon_bounds=topo_data.lon_bounds,
+                nlat=new_nlat,
+                nlon=new_nlon
+            )
+            
+            # Save to cache
+            if use_cache:
+                _save_to_cache(new_topo_data, cache_path)
+            
+            return new_topo_data
+            
+        except Exception:
+            # If download fails, fall through to interpolation
+            pass
+    
+    # Perform interpolation as fallback
     lat_old = np.linspace(topo_data.lat_bounds[0], topo_data.lat_bounds[1], topo_data.nlat)
     lon_old = np.linspace(topo_data.lon_bounds[0], topo_data.lon_bounds[1], topo_data.nlon)
     

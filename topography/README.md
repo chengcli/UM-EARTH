@@ -7,9 +7,10 @@ A Python module for downloading, caching, and manipulating topographic elevation
 - **Download topographic data**: Fetches elevation data for any geographic region
 - **Automatic caching**: Downloaded data is cached locally for fast subsequent access
 - **Resolution management**: 
-  - `split()`: Increase resolution by 2x using interpolation
+  - `split()`: Increase resolution by 2x - tries to download higher resolution data from internet, falls back to interpolation
   - `merge()`: Decrease resolution by 2x using averaging
 - **Flexible interpolation**: Supports linear and cubic interpolation methods
+- **Smart data fetching**: Automatically attempts to fetch higher resolution data when splitting, with graceful fallback
 
 ## Installation
 
@@ -42,12 +43,17 @@ print(f"Elevation range: {topo.data.min():.1f} - {topo.data.max():.1f} meters")
 ### Increasing Resolution (Split)
 
 ```python
-# Double the resolution using linear interpolation
-topo_high_res = split(topo, method='linear')
+# Try to download higher resolution data from internet, fall back to interpolation
+topo_high_res = split(topo, method='linear', try_download=True)
 print(topo_high_res.data.shape)  # (200, 200)
 
-# Or use cubic interpolation for smoother results
-topo_cubic = split(topo, method='cubic')
+# Force interpolation without attempting to download
+topo_interp = split(topo, method='cubic', try_download=False)
+
+# The split function will:
+# 1. Check cache for higher resolution data
+# 2. If try_download=True, attempt to download from internet
+# 3. Fall back to interpolation if download fails or is disabled
 ```
 
 ### Decreasing Resolution (Merge)
@@ -144,17 +150,24 @@ split(
     topo_data: TopographyData,
     method: Literal['linear', 'cubic'] = 'linear',
     cache_dir: str = "~/.cache/topography",
-    use_cache: bool = True
+    use_cache: bool = True,
+    try_download: bool = True
 ) -> TopographyData
 ```
 
-Increase resolution by a factor of 2 using interpolation.
+Increase resolution by a factor of 2.
+
+The function tries multiple approaches in this priority order:
+1. Check cache for higher resolution data
+2. If `try_download=True`, attempt to download higher resolution data from internet
+3. Fall back to interpolation if download is disabled or fails
 
 **Parameters:**
 - `topo_data`: TopographyData object to increase resolution
-- `method`: Interpolation method ('linear' or 'cubic')
+- `method`: Interpolation method ('linear' or 'cubic') used if download fails
 - `cache_dir`: Directory for caching
 - `use_cache`: Whether to use cached data if available
+- `try_download`: Whether to attempt downloading higher resolution data from internet (default: True)
 
 **Returns:**
 - `TopographyData` with doubled resolution

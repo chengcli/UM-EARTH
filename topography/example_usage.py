@@ -36,21 +36,21 @@ def main():
     print(f"   Elevation range: {topo.data.min():.1f} - {topo.data.max():.1f} meters")
     print(f"   Mean elevation: {topo.data.mean():.1f} meters")
     
-    # Example 2: Increase resolution with linear interpolation
-    print("\n2. Increasing resolution with linear interpolation...")
-    topo_linear = split(topo, method='linear')
-    print(f"   New shape: {topo_linear.data.shape}")
-    print(f"   Elevation range: {topo_linear.data.min():.1f} - {topo_linear.data.max():.1f} meters")
+    # Example 2: Increase resolution with download attempt
+    print("\n2. Increasing resolution (try downloading from internet)...")
+    topo_downloaded = split(topo, method='linear', try_download=True)
+    print(f"   New shape: {topo_downloaded.data.shape}")
+    print(f"   Elevation range: {topo_downloaded.data.min():.1f} - {topo_downloaded.data.max():.1f} meters")
     
-    # Example 3: Increase resolution with cubic interpolation
-    print("\n3. Increasing resolution with cubic interpolation...")
-    topo_cubic = split(topo, method='cubic')
-    print(f"   New shape: {topo_cubic.data.shape}")
-    print(f"   Elevation range: {topo_cubic.data.min():.1f} - {topo_cubic.data.max():.1f} meters")
+    # Example 3: Increase resolution with interpolation only
+    print("\n3. Increasing resolution (force interpolation, no download)...")
+    topo_interp = split(topo, method='cubic', try_download=False)
+    print(f"   New shape: {topo_interp.data.shape}")
+    print(f"   Elevation range: {topo_interp.data.min():.1f} - {topo_interp.data.max():.1f} meters")
     
     # Example 4: Decrease resolution
     print("\n4. Decreasing resolution by merging...")
-    topo_merged = merge(topo_linear)
+    topo_merged = merge(topo_downloaded)
     print(f"   New shape: {topo_merged.data.shape}")
     print(f"   Elevation range: {topo_merged.data.min():.1f} - {topo_merged.data.max():.1f} meters")
     
@@ -63,7 +63,7 @@ def main():
     
     # Example 6: Multiple merges
     print("\n6. Progressive coarsening with multiple merges...")
-    current_topo = topo_linear
+    current_topo = topo_downloaded
     for i in range(2):
         current_topo = merge(current_topo)
         print(f"   Level {i+1}: {current_topo.data.shape}")

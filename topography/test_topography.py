@@ -241,8 +241,8 @@ class TestSplit(unittest.TestCase):
             split(self.topo, method='invalid', cache_dir=self.temp_dir)
     
     def test_split_preserves_corners(self):
-        """Test that split preserves corner values."""
-        topo_high = split(self.topo, method='linear', cache_dir=self.temp_dir)
+        """Test that split with interpolation preserves corner values."""
+        topo_high = split(self.topo, method='linear', cache_dir=self.temp_dir, try_download=False)
         
         # Corner values should be preserved (or very close due to interpolation)
         self.assertAlmostEqual(topo_high.data[0, 0], self.topo.data[0, 0], places=1)
@@ -273,6 +273,60 @@ class TestSplit(unittest.TestCase):
         
         self.assertEqual(topo1.data.shape, (20, 40))
         self.assertEqual(topo2.data.shape, (40, 80))
+    
+    def test_split_with_download(self):
+        """Test split with try_download=True (should try to download)."""
+        topo_high = split(
+            self.topo,
+            method='linear',
+            cache_dir=self.temp_dir,
+            try_download=True
+        )
+        
+        self.assertEqual(topo_high.data.shape, (20, 40))
+        self.assertEqual(topo_high.nlat, 20)
+        self.assertEqual(topo_high.nlon, 40)
+    
+    def test_split_without_download(self):
+        """Test split with try_download=False (force interpolation)."""
+        topo_high = split(
+            self.topo,
+            method='linear',
+            cache_dir=self.temp_dir,
+            try_download=False
+        )
+        
+        self.assertEqual(topo_high.data.shape, (20, 40))
+        self.assertEqual(topo_high.nlat, 20)
+        self.assertEqual(topo_high.nlon, 40)
+    
+    def test_split_download_vs_interpolation(self):
+        """Test that both download and interpolation produce valid results."""
+        # Split with download attempt
+        topo_download = split(
+            self.topo,
+            method='linear',
+            cache_dir=self.temp_dir,
+            try_download=True,
+            use_cache=False
+        )
+        
+        # Split with interpolation only
+        topo_interp = split(
+            self.topo,
+            method='linear',
+            cache_dir=self.temp_dir,
+            try_download=False,
+            use_cache=False
+        )
+        
+        # Both should have correct shape
+        self.assertEqual(topo_download.data.shape, (20, 40))
+        self.assertEqual(topo_interp.data.shape, (20, 40))
+        
+        # Both should have reasonable elevation values
+        self.assertTrue(np.all(topo_download.data >= 0))
+        self.assertTrue(np.all(topo_interp.data >= 0))
 
 
 class TestMerge(unittest.TestCase):
@@ -372,8 +426,9 @@ class TestSplitMergeRoundtrip(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
     
     def test_split_then_merge(self):
-        """Test that split followed by merge returns to original resolution."""
-        topo_high = split(self.topo, method='linear', cache_dir=self.temp_dir)
+        """Test that split followed by merge returns to original resolution with interpolation."""
+        # Use interpolation only for predictable results
+        topo_high = split(self.topo, method='linear', cache_dir=self.temp_dir, try_download=False)
         topo_back = merge(topo_high)
         
         self.assertEqual(topo_back.data.shape, self.topo.data.shape)
@@ -386,9 +441,10 @@ class TestSplitMergeRoundtrip(unittest.TestCase):
     
     def test_multiple_splits_and_merges(self):
         """Test multiple split and merge operations."""
+        # Use interpolation only for predictable results
         # Split twice
-        topo1 = split(self.topo, method='linear', cache_dir=self.temp_dir)
-        topo2 = split(topo1, method='linear', cache_dir=self.temp_dir)
+        topo1 = split(self.topo, method='linear', cache_dir=self.temp_dir, try_download=False)
+        topo2 = split(topo1, method='linear', cache_dir=self.temp_dir, try_download=False)
         
         # Merge twice
         topo3 = merge(topo2)
