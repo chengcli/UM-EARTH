@@ -18,7 +18,7 @@ import hashlib
 import pickle
 from typing import Tuple, Optional, Literal
 import numpy as np
-import requests
+import requests  # For future real API implementation
 from scipy.interpolate import RegularGridInterpolator
 
 
@@ -421,8 +421,9 @@ def split(
             
             return new_topo_data
             
-        except Exception:
-            # If download fails, fall through to interpolation
+        except (requests.RequestException, ValueError, RuntimeError):
+            # If download fails (network error, API error, or data error),
+            # fall through to interpolation as fallback
             pass
     
     # Perform interpolation as fallback
