@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from snapy import MeshBlock
 
 def refine_spatial(tensor: torch.Tensor, method: str):
     # Save original shape
@@ -41,6 +42,25 @@ def conservative_refine(x: torch.Tensor):
 
 def conservative_coarsen(y: torch.Tensor):
     return coarsen_spatial(y)
+
+def refine_meshblock(block: MeshBlock) -> MeshBlock:
+    op = block.options()
+    if op.coord().nx2() > 1:
+        op.coord().nx2(op.coord().nx2() * 2)
+    if op.coord().nx3() > 1:
+        op.coord().nx3(op.coord().nx3() * 2)
+    return MeshBlock(op)
+
+def coarsen_meshblock(block: MeshBlock) -> MeshBlock:
+    op = block.options()
+    nghost = op.coord().nghost()
+    if op.coord().nx2() > 1:
+        op.coord().nx2(op.coord().nx2() // 2)
+        assert op.coord().nx2() > nghost, "Cannot coarsen: insufficient cells in nx2"
+    if op.coord().nx3() > 1:
+        op.coord().nx3(op.coord().nx3() // 2)
+        assert op.coord().nx3() > nghost, "Cannot coarsen: insufficient cells in nx3"
+    return MeshBlock(op)
 
 if __name__ == "__main__":
     # Test the function
