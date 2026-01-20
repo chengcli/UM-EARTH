@@ -49,7 +49,7 @@ python generate_config.py ann-arbor \
 ### Download and Process Data
 
 ```bash
-# Download Ann Arbor data (uses ann-arbor.yaml)
+# Download White Sands site1 data (uses ws-site1.yaml)
 python prepare_initial_condition.py ws-site1
 
 # Download White Sands data (uses white_sands/white_sands.yaml)
@@ -60,6 +60,11 @@ python prepare_initial_condition.py ann-arbor --config my_custom_config.yaml
 
 # Run only first 2 steps
 python prepare_initial_condition.py white-sands --stop-after 2
+```
+
+### Run an initial condition equilibrator
+```bash
+python run_frigate.py -i ws-site1-init.yaml -r regridded_ws-site1_20251102_block_0_0.part
 ```
 
 ## Location Table Format

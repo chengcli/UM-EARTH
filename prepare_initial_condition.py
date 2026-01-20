@@ -11,7 +11,7 @@ Step 2: Calculate air density from downloaded data
 Step 3: Regrid to Cartesian coordinates
 Step 4: Compute hydrostatic pressure
 Step 5: Domain decomposition (optional, use --nX, --nY flag)
-Step 6: Convert splitted NetCDF to PyTorch tensors (restart files)
+Step 6: Convert splitted NetCDF to PyTorch tensors (part files)
 
 Usage:
     python prepare_initial_condition.py <location-id> [options]
@@ -254,7 +254,7 @@ def check_step6_files(tensors_dir):
         return False
     
     # Look for tensor files
-    tensor_files = list(tensors_dir.glob("*_block_*.restart"))
+    tensor_files = list(tensors_dir.glob("*_block_*.part"))
     
     return len(tensor_files) > 0
 
@@ -612,7 +612,7 @@ def main():
     if args.stop_after == 5 or args.stop_after == 6:
         print(f"  - regridded_{location_id}_{end_date}_blocks/*_block_*_*.nc (Step 5)")
         if args.stop_after != 5:
-            print(f"  - regridded_{location_id}_{end_date}_tensors/*_block_*.restart(Step 6)")
+            print(f"  - regridded_{location_id}_{end_date}_tensors/*_block_*.part(Step 6)")
             print()
             print(f"\033[92m[OK]\033[0m The PyTorch tensor files in regridded_{location_id}_{end_date}_tensors/ are ready for {location_name} simulations.")
         else:

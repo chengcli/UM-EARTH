@@ -13,10 +13,10 @@ The script performs the following operations:
    - cswc + crwc -> q3 (cloud snow + cloud rain water)
 3. Aggregates variables into hydro_w tensor with ordering:
    (rho, w, v, u, p, q, q2, q3) -> shape (time, nvar=8, x3, x2, x1)
-4. Saves tensor to .restart file using torch.jit.script for LibTorch compatibility
+4. Saves tensor to .part file using torch.jit.script for LibTorch compatibility
 
 Usage:
-    python convert_netcdf_to_tensor.py <input_file.nc> [--output OUTPUT.restart]
+    python convert_netcdf_to_tensor.py <input_file.nc> [--output OUTPUT.part]
     python convert_netcdf_to_tensor.py <input_dir> [--output-dir OUTPUT_DIR]
 
 Examples:
@@ -24,13 +24,13 @@ Examples:
     python convert_netcdf_to_tensor.py regridded_block_0_0.nc
     
     # Convert a single file with custom output
-    python convert_netcdf_to_tensor.py regridded_block_0_0.nc --output block_0_0.restart
+    python convert_netcdf_to_tensor.py regridded_block_0_0.nc --output block0.part
     
     # Convert all .nc files in a directory
     python convert_netcdf_to_tensor.py ./blocks/ --output-dir ./tensors/
 
 Output:
-    - .restart files with the same basename as the input .nc files
+    - .part files with a similar basename as the input .nc files
     - Each file contains a TensorModule with 'hydro_w' tensor
     - hydro_w shape: (time, nvar=8, x3, x2, x1)
     - Variable order in nvar dimension: rho, w, v, u, p, q, q2, q3
@@ -60,7 +60,7 @@ def save_tensors(tensor_map: Dict[str, torch.Tensor], filename: str) -> None:
     
     Args:
         tensor_map: Dictionary mapping tensor names to torch tensors
-        filename: Output .restart file path
+        filename: Output .part file path
     """
     class TensorModule(torch.nn.Module):
         def __init__(self, tensors):
@@ -79,10 +79,10 @@ def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None)
     
     Args:
         input_file: Path to input NetCDF file from Step 5
-        output_file: Optional output .restart file path. If None, uses same basename.
+        output_file: Optional output .part file path. If None, uses same basename.
     
     Returns:
-        Path to output .restart file
+        Path to output .part file
         
     Raises:
         FileNotFoundError: If input file doesn't exist
@@ -95,7 +95,7 @@ def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None)
     if output_file is None:
         base_name = os.path.splitext(os.path.basename(input_file))[0]
         output_dir = os.path.dirname(input_file)
-        output_file = os.path.join(output_dir, f"{base_name}.restart")
+        output_file = os.path.join(output_dir, f"{base_name}.part")
     
     print(f"Converting {input_file} -> {output_file}")
     
@@ -248,7 +248,7 @@ def convert_directory(input_dir: str, output_dir: Optional[str] = None,
         pattern: Glob pattern for finding NetCDF files (default: "*.nc")
     
     Returns:
-        List of output .restart file paths
+        List of output .part file paths
         
     Raises:
         FileNotFoundError: If input directory doesn't exist
@@ -279,7 +279,7 @@ def convert_directory(input_dir: str, output_dir: Optional[str] = None,
     output_files = []
     for nc_file in nc_files:
         base_name = nc_file.stem  # filename without extension
-        output_file = output_path / f"{base_name}.restart"
+        output_file = output_path / f"{base_name}.part"
         
         try:
             convert_netcdf_to_tensor(str(nc_file), str(output_file))
@@ -304,7 +304,7 @@ Examples:
   python convert_netcdf_to_tensor.py regridded_block_0_0.nc
   
   # Convert with custom output
-  python convert_netcdf_to_tensor.py regridded_block_0_0.nc --output block_0_0.restart
+  python convert_netcdf_to_tensor.py regridded_block_0_0.nc --output block_0_0.part
   
   # Convert all files in directory
   python convert_netcdf_to_tensor.py ./blocks/ --output-dir ./tensors/
@@ -318,7 +318,7 @@ Examples:
     
     parser.add_argument(
         '--output', '-o',
-        help='Output .restart file (for single file mode) or output directory (for directory mode)'
+        help='Output .part file (for single file mode) or output directory (for directory mode)'
     )
     
     parser.add_argument(
