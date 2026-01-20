@@ -9,6 +9,30 @@
 # Domain: {x2_extent_km} km × {x3_extent_km} km horizontal, {x1_max_km} km vertical
 # Time window: {start_date} to {end_date}
 
+reference-state:
+  Tref: 0.
+  Pref: 1.e5
+
+species:
+  - name: dry
+    composition: {O: 0.42, N: 1.56, Ar: 0.01}
+    cv_R: 2.5
+
+  - name: H2O
+    composition: {H: 2, O: 1}
+    cv_R: 2.5
+    u0_R: 0.
+
+  - name: H2O(l)
+    composition: {H: 2, O: 1}
+    cv_R: 9.0
+    u0_R: -3430.
+
+  - name: H2O(l,p)
+    composition: {H: 2, O: 1}
+    cv_R: 9.0
+    u0_R: -3430.
+
 geometry:
   # Must be cartesian type for atmospheric simulations
   type: cartesian
@@ -66,13 +90,18 @@ dynamics:
     type: hllc
 
 boundary-condition:
+  internal:
+    solid-density: 1.e3
+    solid-pressure: 1.e9
+    max-iter: 5
+
   external:
     x1-inner: reflecting
     x1-outer: reflecting
-    x2-inner: periodic
-    x2-outer: periodic
-    x3-inner: periodic
-    x3-outer: periodic
+    x2-inner: outflow
+    x2-outer: outflow
+    x3-inner: outflow
+    x3-outer: outflow
 
 integration:
   # Integration parameters for atmospheric model
@@ -82,6 +111,7 @@ integration:
   implicit-scheme: 0       # Explicit time integration
   nlim: -1                 # No step limit
   tlim: {tlim}             # Simulation time (seconds)
+  ncycle_out: 10           # Diagnostic output frequency
   
   # Date for fetching ERA5 data (YYYY-MM-DD format)
   start-date: {start_date}
@@ -89,13 +119,13 @@ integration:
 
 outputs:
   - type: restart
-    dt: 10.E5
+    dt: 2400.
   - type: netcdf
     variables: [prim, uov]
-    dt: 1.E4
+    dt: 600.
   - type: netcdf
     variables: [thermo, path]
-    dt: 1.E4
+    dt: 600.
 
 forcing:
   # Gravity for hydrostatic balance calculations
@@ -105,11 +135,11 @@ forcing:
 
   top-sponge-lyr:
     tau: 1.e4
-    width: 10.e3
+    width: 100.
 
   bot-sponge-lyr:
     tau: 1.e5
-    width: 10.e3
+    width: 100.
 
 sedimentation:
   radius:
@@ -119,7 +149,7 @@ sedimentation:
     H2O(l,p): 1000.
 
   const-vsed:
-    H2O(l,p): -50.0
+    H2O(l,p): -10.0
 
 reactions:
   - equation: H2O <=> H2O(l)

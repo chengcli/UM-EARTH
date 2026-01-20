@@ -14,8 +14,8 @@ Usage:
     python generate_config.py <location-id> [options]
 
 Examples:
-    # Generate config for Ann Arbor with defaults
-    python generate_config.py ann-arbor
+    # Generate config for ws-site1
+    python generate_config.py ws-site1 --start-date 2025-11-01 -end-date 2025
 
     # Generate config with custom time window
     python generate_config.py ann-arbor --start-date 2025-11-01 --end-date 2025-11-03

@@ -11,7 +11,7 @@ Step 2: Calculate air density from downloaded data
 Step 3: Regrid to Cartesian coordinates
 Step 4: Compute hydrostatic pressure
 Step 5: Domain decomposition (optional, use --nX, --nY flag)
-Step 6: Convert splitted NetCDF to PyTorch tensors (restart files)
+Step 6: Convert splitted NetCDF to PyTorch tensors (part files)
 
 Usage:
     python prepare_initial_condition.py <location-id> [options]
@@ -55,12 +55,24 @@ import sys
 import time
 import yaml
 from pathlib import Path
+from datetime import datetime, timedelta
 
 # Add parent directory to path for importing ECMWF modules
 SCRIPT_DIR = Path(__file__).parent
 ECMWF_DIR = SCRIPT_DIR / "ecmwf_api"
 sys.path.insert(0, str(ECMWF_DIR))
 
+def date_range_yyyymmdd(start_date: str, end_date: str) -> list[str]:
+    start = datetime.strptime(start_date, "%Y%m%d").date()
+    end = datetime.strptime(end_date, "%Y%m%d").date()
+
+    if start > end:
+        raise ValueError("start_date must be <= end_date")
+
+    return [
+        (start + timedelta(days=i)).strftime("%Y%m%d")
+        for i in range((end - start).days + 1)
+    ]
 
 def load_locations(locations_file):
     """Load location definitions from CSV file."""
@@ -231,9 +243,9 @@ def check_step2_files(output_dir):
     return len(density_files) > 0
 
 
-def check_step3_files(output_dir, location_id, end_date):
+def check_step3_files(output_dir, location_id, date_str):
     """Check if Step 3 output file exists."""
-    regridded_file = output_dir / f"regridded_{location_id}_{end_date}.nc"
+    regridded_file = output_dir / f"regridded_{location_id}_{date_str}.nc"
     return regridded_file.exists()
 
 
@@ -254,13 +266,13 @@ def check_step6_files(tensors_dir):
         return False
     
     # Look for tensor files
-    tensor_files = list(tensors_dir.glob("*_block_*.restart"))
+    tensor_files = list(tensors_dir.glob("*_block_*.part"))
     
     return len(tensor_files) > 0
 
 
 def wait_for_files(check_function, output_dir, step_name, timeout_seconds=60,
-                   check_interval=5, location_id=None, end_date=None):
+                   check_interval=5, location_id=None, date_str=None):
     """
     Wait for files to appear after a step completes.
     
@@ -280,7 +292,7 @@ def wait_for_files(check_function, output_dir, step_name, timeout_seconds=60,
     
     while time.time() - start_time < timeout_seconds:
         if location_id:
-            if check_function(output_dir, location_id, end_date):
+            if check_function(output_dir, location_id, date_str):
                 print(f"\033[92m[OK]\033[0m {step_name} output files found")
                 return True
         else:
@@ -403,6 +415,17 @@ def main():
         print(f"  python generate_config.py {location_id}")
         return 1
 
+    # grab start date string from config
+    with open(config_path, 'r') as f:
+        config_data = yaml.safe_load(f)
+        # check start-date key in config/integration
+        if 'integration' not in config_data:
+            raise KeyError("Missing 'integration' section in config file")
+        if 'start-date' not in config_data['integration']:
+            raise KeyError("Missing 'start-date' key in 'integration' section of config file")
+        # datetime.date YYYY-MM-DD to YYYYMMDD
+        start_date = config_data['integration'].get('start-date').strftime('%Y%m%d')
+
     # grab end date string from config
     with open(config_path, 'r') as f:
         config_data = yaml.safe_load(f)
@@ -419,6 +442,7 @@ def main():
     print("="*70)
     print(f"Location ID: {location_id}")
     print(f"Configuration: {config_path}")
+    print(f"Start date: {start_date}")
     print(f"End date: {end_date}")
     print(f"Output base: {output_base}")
     print(f"Timeout per step: {args.timeout} seconds ({args.timeout/60:.1f} minutes)")
@@ -467,134 +491,143 @@ def main():
             print("\033[91m[ERROR]\033[0m Step 1 output files not found")
             return 1
 
-    ####### directory structures #######
-    blocks_dir = output_dir / f"regridded_{location_id}_{end_date}_blocks"
-    regridded_output = output_dir / f"regridded_{location_id}_{end_date}.nc"
-    tensors_dir = output_dir / f"regridded_{location_id}_{end_date}_tensors"
-    ####################################
-    
     if args.stop_after == 1:
         print("\n" + "="*70)
         print("Stopped after Step 1 as requested")
         print("="*70)
         return 0
-    
-    # Step 2: Calculate air density
-    if args.start_from <= 2:
-        step2_success = run_step_with_timeout(
-            "Step 2: Calculate Air Density",
-            ["python3", str(density_script),
-             "--input-dir", str(output_dir),
-             "--output-dir", str(output_dir)],
-            timeout_seconds=args.timeout
-        )
-        
-        if not step2_success:
-            print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 2")
-            return 1
-        
-        # Wait for Step 2 files
-        if not wait_for_files(check_step2_files, output_dir, "Step 2", timeout_seconds=30):
-            print("\033[91m[ERROR]\033[0m Step 2 output files not found")
-            return 1
-    
-    if args.stop_after == 2:
+
+    # loop from start_date to end_date
+    for date_str in date_range_yyyymmdd(start_date, end_date):
+        if args.start_from > 1:
+            output_dir = find_output_directory(output_base)
+            print(f"\033[92m[OK]\033[0m Found output directory: {output_dir}")
+
         print("\n" + "="*70)
-        print("Stopped after Step 2 as requested")
-        print("="*70)
-        return 0
-    
-    # Step 3: Regrid to Cartesian coordinates
-    if args.start_from <= 3:
-        step3_success = run_step_with_timeout(
-            "Step 3: Regrid to Cartesian",
-            ["python3", str(regrid_script),
-             str(config_path), str(output_dir),
-             "--output", str(regridded_output)],
-            timeout_seconds=args.timeout
-        )
+        print(f"Processing date: {date_str}")
+
+        ####### directory structures #######
+        blocks_dir = output_dir / f"regridded_{location_id}_{date_str}_blocks"
+        regridded_output = output_dir / f"regridded_{location_id}_{date_str}.nc"
+        tensors_dir = output_dir / f"regridded_{location_id}_{date_str}_tensors"
+        ####################################
         
-        if not step3_success:
-            print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 3")
-            return 1
+        # Step 2: Calculate air density
+        if args.start_from <= 2:
+            step2_success = run_step_with_timeout(
+                "Step 2: Calculate Air Density",
+                ["python3", str(density_script),
+                 "--input-dir", str(output_dir),
+                 "--output-dir", str(output_dir)],
+                timeout_seconds=args.timeout
+            )
+            
+            if not step2_success:
+                print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 2")
+                return 1
+            
+            # Wait for Step 2 files
+            if not wait_for_files(check_step2_files, output_dir, "Step 2", timeout_seconds=30):
+                print("\033[91m[ERROR]\033[0m Step 2 output files not found")
+                return 1
         
-        # Wait for Step 3 file
-        if not wait_for_files(check_step3_files, output_dir, "Step 3",
-                              timeout_seconds=30, location_id=location_id,
-                              end_date=end_date):
-            print("\033[91m[ERROR]\033[0m Step 3 output file not found")
-            return 1
-    
-    if args.stop_after == 3:
-        print("\n" + "="*70)
-        print("Stopped after Step 3 as requested")
-        print("="*70)
-        return 0
-    
-    # Step 4: Compute hydrostatic pressure
-    if args.start_from <= 4:
-        step4_success = run_step_with_timeout(
-            "Step 4: Compute Hydrostatic Pressure",
-            ["python3", str(pressure_script),
-             str(config_path), str(regridded_output)],
-            timeout_seconds=args.timeout
-        )
+        if args.stop_after == 2:
+            print("\n" + "="*70)
+            print("Stopped after Step 2 as requested")
+            print("="*70)
+            return 0
         
-        if not step4_success:
-            print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 4")
-            return 1
-    
-    if args.stop_after == 4:
-        print("\n" + "="*70)
-        print("Stopped after Step 4 as requested")
-        print("="*70)
-        return 0
-    
-    # Step 5: Domain decomposition (optional)
-    if args.start_from <= 5:
-        step5_success = run_step_with_timeout(
-            "Step 5: Domain Decomposition",
-            ["python3", str(decompose_script),
-             str(regridded_output),
-             str(args.nY),
-             str(args.nX),
-             "--output-dir", str(blocks_dir)],
-            timeout_seconds=args.timeout
-        )
+        # Step 3: Regrid to Cartesian coordinates
+        if args.start_from <= 3:
+            step3_success = run_step_with_timeout(
+                "Step 3: Regrid to Cartesian",
+                ["python3", str(regrid_script),
+                 str(config_path), str(output_dir),
+                 "--output", str(regridded_output)],
+                timeout_seconds=args.timeout
+            )
+            
+            if not step3_success:
+                print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 3")
+                return 1
+            
+            # Wait for Step 3 file
+            if not wait_for_files(check_step3_files, output_dir, "Step 3",
+                                  timeout_seconds=30, location_id=location_id,
+                                  date_str=date_str):
+                print("\033[91m[ERROR]\033[0m Step 3 output file not found")
+                return 1
         
-        if not step5_success:
-            print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 5")
-            return 1
+        if args.stop_after == 3:
+            print("\n" + "="*70)
+            print("Stopped after Step 3 as requested")
+            print("="*70)
+            return 0
         
-        # Wait for Step 5 files
-        if not wait_for_files(check_step5_files, blocks_dir, "Step 5", timeout_seconds=30):
-            print("\033[91m[ERROR]\033[0m Step 5 output files not found")
-            return 1
+        # Step 4: Compute hydrostatic pressure
+        if args.start_from <= 4:
+            step4_success = run_step_with_timeout(
+                "Step 4: Compute Hydrostatic Pressure",
+                ["python3", str(pressure_script),
+                 str(config_path), str(regridded_output)],
+                timeout_seconds=args.timeout
+            )
+            
+            if not step4_success:
+                print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 4")
+                return 1
         
-    if args.stop_after == 5:
-        print("\n" + "="*70)
-        print("Stopped after Step 5 as requested")
-        print("="*70)
-        return 0
+        if args.stop_after == 4:
+            print("\n" + "="*70)
+            print("Stopped after Step 4 as requested")
+            print("="*70)
+            return 0
         
-    # Step 6: Convert NetCDF to PyTorch tensors
-    if args.start_from <= 6:
-        step6_success = run_step_with_timeout(
-            "Step 6: Convert to PyTorch Tensors",
-            ["python3", str(convert_script),
-             str(blocks_dir),
-             "--output-dir", str(tensors_dir)],
-            timeout_seconds=args.timeout
-        )
-        
-        if not step6_success:
-            print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 6")
-            return 1
-        
-        # Wait for Step 6 files
-        if not wait_for_files(check_step6_files, tensors_dir, "Step 6", timeout_seconds=30):
-            print("\033[91m[ERROR]\033[0m Step 6 output files not found")
-            return 1
+        # Step 5: Domain decomposition (optional)
+        if args.start_from <= 5:
+            step5_success = run_step_with_timeout(
+                "Step 5: Domain Decomposition",
+                ["python3", str(decompose_script),
+                 str(regridded_output),
+                 str(args.nY),
+                 str(args.nX),
+                 "--output-dir", str(blocks_dir)],
+                timeout_seconds=args.timeout
+            )
+            
+            if not step5_success:
+                print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 5")
+                return 1
+            
+            # Wait for Step 5 files
+            if not wait_for_files(check_step5_files, blocks_dir, "Step 5", timeout_seconds=30):
+                print("\033[91m[ERROR]\033[0m Step 5 output files not found")
+                return 1
+            
+        if args.stop_after == 5:
+            print("\n" + "="*70)
+            print("Stopped after Step 5 as requested")
+            print("="*70)
+            return 0
+            
+        # Step 6: Convert NetCDF to PyTorch tensors
+        if args.start_from <= 6:
+            step6_success = run_step_with_timeout(
+                "Step 6: Convert to PyTorch Tensors",
+                ["python3", str(convert_script),
+                 str(blocks_dir),
+                 "--output-dir", str(tensors_dir)],
+                timeout_seconds=args.timeout
+            )
+            
+            if not step6_success:
+                print("\n\033[91m[ERROR]\033[0m Pipeline failed at Step 6")
+                return 1
+            
+            # Wait for Step 6 files
+            if not wait_for_files(check_step6_files, tensors_dir, "Step 6", timeout_seconds=30):
+                print("\033[91m[ERROR]\033[0m Step 6 output files not found")
+                return 1
     
     # Success!
     print("\n" + "="*70)
@@ -612,7 +645,7 @@ def main():
     if args.stop_after == 5 or args.stop_after == 6:
         print(f"  - regridded_{location_id}_{end_date}_blocks/*_block_*_*.nc (Step 5)")
         if args.stop_after != 5:
-            print(f"  - regridded_{location_id}_{end_date}_tensors/*_block_*.restart(Step 6)")
+            print(f"  - regridded_{location_id}_{end_date}_tensors/*_block_*.part(Step 6)")
             print()
             print(f"\033[92m[OK]\033[0m The PyTorch tensor files in regridded_{location_id}_{end_date}_tensors/ are ready for {location_name} simulations.")
         else:
