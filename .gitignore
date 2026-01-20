@@ -8,3 +8,12 @@ __pycache__/
 
 # outputs
 *N*N*W*W/
+
+# netcdf files
+*.nc
+
+# restart files
+*.restart
+
+# part file
+*.part

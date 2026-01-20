@@ -16,72 +16,6 @@ def call_user_output(bvars: dict[str, torch.Tensor]):
     out["qtol"] = hydro_w[kICY:].sum(dim=0)
     return out
 
-def run_with(infile: str, restart_file:str):
-    with open(infile, "r") as f:
-        config = yaml.safe_load(f)
-
-    # set hydrodynamic options
-    op = MeshBlockOptions.from_yaml(infile)
-    block = MeshBlock(op)
-
-    # use cuda if available
-    if torch.cuda.is_available() and op.layout().backend() == "nccl":
-        device = torch.device(block.device())
-        print("device = ", device)
-    else:
-        device = torch.device("cpu")
-    block.to(device)
-
-    # get handles to modules
-    thermo_y = block.module("hydro.eos.thermo")
-    eos = block.module("hydro.eos")
-    # thermo_y.options.max_iter(100)
-
-    thermo_x = ThermoX(thermo_y.options)
-    thermo_x.to(device)
-
-    block_vars = {}
-
-    module = torch.jit.load(restart_file)
-    print('load module')
-    #for name, data in module.named_buffers(recurse=True):
-    for name, data in module.named_parameters(recurse=True):
-        print(name, data.shape)
-        #block_vars[name] = data[0].to(device).to(torch.double)
-        block_vars[name] = data.to(device).to(torch.double)
-
-    # equilibrate initial fields
-    hydro_w = block_vars["hydro_w"]
-    dens = hydro_w[kIDN]
-    pres = hydro_w[kIPR]
-    ivol = thermo_y.compute("DY->V", (dens, hydro_w[kICY:]))
-    temp = thermo_y.compute("PV->T", (pres, ivol))
-    xfrac = thermo_y.compute("Y->X", (hydro_w[kICY:],))
-
-    #print("dens[3,3,10] = ", dens[3,3,10])
-    #print("temp[3,3,10] = ", temp[3,3,10])
-    #print("pres[3,3,10] = ", pres[3,3,10])
-    #print("xfrac[3,3,10,:] = ", xfrac[3,3,10,:])
-    #thermo_x(temp[3,3,10], pres[3,3,10], xfrac[3,3,10,:])
-    #hydro_w[kICY:] = thermo_x.compute("X->Y", (xfrac,))
-
-    #print(block_vars.keys())
-    #print(block_vars["hydro_w"].shape)
-    #exit()
-
-    block_vars, current_time = block.initialize(block_vars)
-    block.set_user_output_func(call_user_output)
-
-    # kinetics model
-    op_kinet = KineticsOptions.from_yaml(infile)
-    kinet = Kinetics(op_kinet)
-    kinet.to(device)
-
-    # integration
-    block.make_outputs(block_vars, current_time)
-
-    block.finalize(block_vars, current_time)
-
 def create_block(config_file: str):
     with open(config_file, "r") as f:
         config = yaml.safe_load(f)
@@ -110,16 +44,35 @@ def create_block(config_file: str):
     kinet = Kinetics(op_kinet)
     kinet.to(device)
 
-    return block, thermo_x, kinet
+    return block, thermo_x, kinet, device
 
-def load_initial_ecmwf_input(input_file: str):
+def load_ecmwf_input(input_file: str, index: int = 0,
+                     device: torch.device = torch.device("cpu")):
+    print('device = ', device)
     module = torch.jit.load(input_file)
     block_vars = {}
-    print('load module')
+    for name, data in module.named_buffers(recurse=True):
+        block_vars[name] = data[index].to(device).to(torch.double)
+
     for name, data in module.named_parameters(recurse=True):
-        print(name, data.shape)
-        #block_vars[name] = data[0].to(device).to(torch.double)
-        block_vars[name] = data.to(device).to(torch.double)
+        block_vars[name] = data[index].to(device).to(torch.double)
+    return block_vars
+
+def equilibrate_initial_fields(block: MeshBlock,
+                               thermo_x: ThermoX,
+                               block_vars: dict[str, torch.Tensor]):
+    thermo_y = block.module("hydro.eos.thermo")
+
+    hydro_w = block_vars["hydro_w"]
+    dens = hydro_w[kIDN]
+    pres = hydro_w[kIPR]
+    ivol = thermo_y.compute("DY->V", (dens, hydro_w[kICY:]))
+    temp = thermo_y.compute("PV->T", (pres, ivol))
+    xfrac = thermo_y.compute("Y->X", (hydro_w[kICY:],))
+
+    thermo_x(temp, pres, xfrac)
+    hydro_w[kICY:] = thermo_x.compute("X->Y", (xfrac,))
+
     return block_vars
 
 def run_simulation(block: MeshBlock, 
@@ -128,6 +81,7 @@ def run_simulation(block: MeshBlock,
                    block_vars: dict[str, torch.Tensor],
                    current_time: float,
                    duration: float):
+    eos = block.module("hydro.eos")
     thermo_y = block.module("hydro.eos.thermo")
     block.options.intg().tlim(current_time + duration)
 
@@ -161,7 +115,7 @@ def run_simulation_one_day(block: MeshBlock,
                            thermo_x: ThermoX,
                            kinet: Kinetics,
                            block_vars: dict[str, torch.Tensor],
-                           current_time: float)
+                           current_time: float):
     block.options.hydro().disalbe_flux_x2(False)
     block.options.hydro().disalbe_flux_x3(False)
     block.options.hydro().icoor().scheme(0)
@@ -177,18 +131,12 @@ def run_simulation_one_day(block: MeshBlock,
     return block_vars, current_time
 
 def refine_simulation(block: MeshBlock,
-                      block_vars: dict[str, torch.Tensor]
-                      ):
+                      block_vars: dict[str, torch.Tensor],
+                      device: torch.device = torch.device("cpu")):
     # refined meshblock
     block = refine_meshblock(block)
-
-    # use cuda if available
-    if torch.cuda.is_available() and op.layout().backend() == "nccl":
-        device = torch.device(block.device())
-        print("device = ", device)
-    else:
-        device = torch.device("cpu")
     block.to(device)
+    block.set_user_output_func(call_user_output)
 
     # thermo model
     thermo_y = block.module("hydro.eos.thermo")
@@ -224,30 +172,41 @@ def main():
     )
     args = parser.parse_args()
 
-    block, thermo_x, kinet = create_block(args.config)
-    block_vars = load_initial_ecmwf_input(args.input)
+    block, thermo_x, kinet, device = create_block(args.config)
+    block_vars = load_ecmwf_input(args.input, index=0, device=device)
+    for key, data in block_vars.items():
+        print(f"{key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
+
+    block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
+    hydro_w = block_vars["hydro_w"]
+    print(hydro_w[kIDN].min(), hydro_w[kIDN].max())
+    print(hydro_w[kICY:].min(), hydro_w[kICY:].max())
+
     block_vars, current_time = block.initialize(block_vars)
 
     ### Step 1: Run hydrostatic adjustment for 2400 seconds ###
-    block.options.hydro().disalbe_flux_x2(True)
-    block.options.hydro().disalbe_flux_x3(True)
-    block.options.hydro().icoor().scheme(1)
+    block.options.hydro().disable_flux_x2(True)
+    block.options.hydro().disable_flux_x3(True)
+    block.options.hydro().icorr().scheme(9)
+    block.options.intg().cfl(0.05)
+
+    block.make_outputs(block_vars, current_time)
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                               block_vars, current_time, 2400.)
 
-    # make initial output
-    block.make_outputs(block_vars, current_time)
     current_time = 0.
     print("[OK] Step 1 (hydrostatic adjustment) completed.\n"
           "Current time = ", current_time, " seconds.\n"
           "Current cycle = ", block.cycle(), ".\n")
+
+    exit(0)
 
     ### Step 2: Run simulation for 7 days with increasing resolution ###
     days = 7
     for day in range(days):
         block_vars, current_time = run_simulation_one_day(block, thermo_x, kinet,
                                                           block_vars, current_time)
-        block, thermo_x, kinet, block_vars = refine_simulation(block, block_vars)
+        block, thermo_x, kinet, block_vars = refine_simulation(block, block_vars, device)
         print("[OK] Day ", day+1, " completed.\n"
               "Current time = ", current_time, " seconds.\n")
     print("[OK] Step 2 (bootstrap) completed.\n"

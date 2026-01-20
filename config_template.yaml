@@ -119,13 +119,13 @@ integration:
 
 outputs:
   - type: restart
-    dt: 10.E5
+    dt: 2400.
   - type: netcdf
     variables: [prim, uov]
-    dt: 1.E4
+    dt: 600.
   - type: netcdf
     variables: [thermo, path]
-    dt: 1.E4
+    dt: 600.
 
 forcing:
   # Gravity for hydrostatic balance calculations
@@ -135,11 +135,11 @@ forcing:
 
   top-sponge-lyr:
     tau: 1.e4
-    width: 150.
+    width: 100.
 
   bot-sponge-lyr:
     tau: 1.e5
-    width: 150.
+    width: 100.
 
 sedimentation:
   radius:
