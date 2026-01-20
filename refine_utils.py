@@ -34,17 +34,36 @@ def coarsen_spatial(tensor: torch.Tensor):
     new_shape = orig_shape[:-3] + [n//2, m//2, p]
     return coarsened.reshape(new_shape)
 
-def conservative_refine(x: torch.Tensor):
-    y1 = refine_spatial(x, "trilinear")
+def conservative_refine(x: torch.Tensor, nghost: int):
+    x_int = x[..., nghost:-nghost, nghost:-nghost, :]
+    y1 = refine_spatial(x_int, "trilinear")
     x1 = coarsen_spatial(y1)
-    dy = refine_spatial(x - x1, "area")
-    return y1 + dy
+    dy = refine_spatial(x_int - x1, "area")
 
-def conservative_coarsen(y: torch.Tensor):
-    return coarsen_spatial(y)
+    dims = list(x.shape)
+    if dims[-2] > 1:
+        dims[-2] = (dims[-2] - 2 * nghost) * 2 + 2 * nghost
+    if dims[-3] > 1:
+        dims[-3] = (dims[-3] - 2 * nghost) * 2 + 2 * nghost
+    y = torch.zeros(dims, dtype=x.dtype, device=x.device)
+    y[..., nghost:-nghost, nghost:-nghost, :] = y1 + dy
+    return y
+
+def conservative_coarsen(y: torch.Tensor, nghost: int):
+    y_int = y[..., nghost:-nghost, nghost:-nghost, :]
+    x1 = coarsen_spatial(y_int)
+
+    dims = list(y.shape)
+    if dims[-2] > 1:
+        dims[-2] = (dims[-2] - 2 * nghost) // 2 + 2 * nghost
+    if dims[-3] > 1:
+        dims[-3] = (dims[-3] - 2 * nghost) // 2 + 2 * nghost
+    x = torch.zeros(dims, dtype=y.dtype, device=y.device)
+    x[..., nghost:-nghost, nghost:-nghost, :] = x1
+    return x
 
 def refine_meshblock(block: MeshBlock) -> MeshBlock:
-    op = block.options()
+    op = block.options
     if op.coord().nx2() > 1:
         op.coord().nx2(op.coord().nx2() * 2)
     if op.coord().nx3() > 1:
@@ -52,7 +71,7 @@ def refine_meshblock(block: MeshBlock) -> MeshBlock:
     return MeshBlock(op)
 
 def coarsen_meshblock(block: MeshBlock) -> MeshBlock:
-    op = block.options()
+    op = block.options
     nghost = op.coord().nghost()
     if op.coord().nx2() > 1:
         op.coord().nx2(op.coord().nx2() // 2)

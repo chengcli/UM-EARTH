@@ -1,6 +1,7 @@
 import torch
 import yaml
 import argparse
+import time
 from snapy import MeshBlockOptions, MeshBlock
 from snapy import kIDN, kIPR, kICY, kIV1, kIV2, kIV3
 from kintera import ThermoX, KineticsOptions, Kinetics
@@ -115,23 +116,23 @@ def run_simulation_one_day(block: MeshBlock,
                            thermo_x: ThermoX,
                            kinet: Kinetics,
                            block_vars: dict[str, torch.Tensor],
-                           current_time: float):
-    block.options.hydro().disalbe_flux_x2(False)
-    block.options.hydro().disalbe_flux_x3(False)
-    block.options.hydro().icoor().scheme(0)
+                           current_time: float,
+                           input_file: str):
 
     for output in block.options.outputs():
         output.dt(3600.)
 
     for chunk in range(4):
         block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                                  block_vars, current_time, 21600.)
-        block_vars = nudge_from_ecmwf(block_vars, args.input)
+                                                  block_vars, current_time, 216.)
+        block_vars = nudge_from_ecmwf(block_vars, input_file)
+        print("  Completed chunk ", chunk+1, "/ 4 for the day.")
 
     return block_vars, current_time
 
 def refine_simulation(block: MeshBlock,
                       block_vars: dict[str, torch.Tensor],
+                      config_file: str,
                       device: torch.device = torch.device("cpu")):
     # refined meshblock
     block = refine_meshblock(block)
@@ -149,11 +150,12 @@ def refine_simulation(block: MeshBlock,
     kinet.to(device)
 
     # refine variables
-    block_vars["hydro_u"] = conservative_refine(block_vars["hydro_u"])
+    nghost = block.options.coord().nghost()
+    block_vars["hydro_u"] = conservative_refine(block_vars["hydro_u"], nghost)
 
     # eos model
     eos = block.module("hydro.eos")
-    block_vars["hydro_w"] = eos.compute("U->W", {block_vars["hydro_u"]})
+    block_vars["hydro_w"] = eos.compute("U->W", (block_vars["hydro_u"],))
     block_vars, _ = block.initialize(block_vars)
 
     return block, thermo_x, kinet, block_vars
@@ -179,12 +181,12 @@ def main():
 
     block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
     hydro_w = block_vars["hydro_w"]
-    print(hydro_w[kIDN].min(), hydro_w[kIDN].max())
-    print(hydro_w[kICY:].min(), hydro_w[kICY:].max())
 
     block_vars, current_time = block.initialize(block_vars)
 
     ### Step 1: Run hydrostatic adjustment for 2400 seconds ###
+    start_clock = time.time()
+
     block.options.hydro().disable_flux_x2(True)
     block.options.hydro().disable_flux_x3(True)
     block.options.hydro().icorr().scheme(9)
@@ -192,38 +194,57 @@ def main():
 
     block.make_outputs(block_vars, current_time)
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                              block_vars, current_time, 2400.)
+                                              block_vars, current_time, 100.)
 
     current_time = 0.
-    print("[OK] Step 1 (hydrostatic adjustment) completed.\n"
-          "Current time = ", current_time, " seconds.\n"
-          "Current cycle = ", block.cycle(), ".\n")
-
-    exit(0)
+    end_clock = time.time()
+    print("\033[92m[OK]\033[0m Step 1 (hydrostatic adjustment) completed.\n",
+          "Current time = ", current_time, " seconds.\n",
+          "Current cycle = ", block.cycle(), ".\n",
+          "Elapsed time = ", end_clock - start_clock, " seconds.\n")
 
     ### Step 2: Run simulation for 7 days with increasing resolution ###
-    days = 7
+    start_clock = end_clock
+    block.options.hydro().disable_flux_x2(False)
+    block.options.hydro().disable_flux_x3(False)
+    block.options.hydro().icorr().scheme(0)
+    block.options.intg().cfl(0.45)
+
+    days = 1
     for day in range(days):
         block_vars, current_time = run_simulation_one_day(block, thermo_x, kinet,
-                                                          block_vars, current_time)
-        block, thermo_x, kinet, block_vars = refine_simulation(block, block_vars, device)
-        print("[OK] Day ", day+1, " completed.\n"
+                                                          block_vars, current_time,
+                                                          args.input)
+        block, thermo_x, kinet, block_vars = refine_simulation(
+                block, block_vars, args.config, device)
+        print("  Refined variable shape = ", block_vars["hydro_w"].shape)
+        print("\033[92m[OK]\033[0m Day ", day+1, " completed.\n",
               "Current time = ", current_time, " seconds.\n")
-    print("[OK] Step 2 (bootstrap) completed.\n"
-          "Current time = ", current_time, " seconds.\n"
-          "Current cycle = ", block.cycle(), ".\n")
+
+    end_clock = time.time()
+    print("\033[92m[OK]\033[0m Step 2 (bootstrap) completed.\n",
+          "Current time = ", current_time, " seconds.\n",
+          "Current cycle = ", block.cycle(), ".\n",
+          "Elapsed time = ", end_clock - start_clock, " seconds.\n")
+
+    block.finalize(block_vars, current_time)
+    exit(0)
 
     ### Step 3: Run prediction for next week ###
-    duration = 604800.  # 7 days in seconds 
+    start_clock = end_clock
+    duration = days * 86400.  # 7 days in seconds 
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                               block_vars, current_time, duration)
-    print("[OK] Step 3 (prediction) completed.\n"
-          "Current time = ", current_time, " seconds.\n"
-          "Current cycle = ", block.cycle(), ".\n")
+
+    end_clock = time.time()
+    print("\033[92m[OK]\033[0m Step 3 (prediction) completed.\n",
+          "Current time = ", current_time, " seconds.\n",
+          "Current cycle = ", block.cycle(), ".\n",
+          "Elapsed time = ", end_clock - start_clock, " seconds.\n")
 
     ### Step 4: Clean up and finalize ###
     block.finalize(block_vars, current_time)
-    print("[OK] Simulation finalized at time = ", current_time, " seconds.")
+    print("\033[92m[OK]\033[0m Simulation finalized at time = ", current_time, " seconds.")
 
 if __name__ == "__main__":
     main()
