@@ -202,10 +202,13 @@ def main():
 
     current_time = 0.
     end_clock = time.time()
-    print("\033[92m[OK]\033[0m Step 1 (hydrostatic adjustment) completed.\n",
+    print_ok("Step 1 (hydrostatic adjustment) completed.\n",
           "Current time = ", current_time, " seconds.\n",
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
+
+    block.finalize(block_vars, current_time)
+    exit()
 
     ### Step 2: Run simulation for 7 days with increasing resolution ###
     start_clock = end_clock
@@ -222,11 +225,11 @@ def main():
         block, thermo_x, kinet, block_vars = refine_simulation(
                 block, block_vars, args.config, device)
         print("  Refined variable shape = ", block_vars["hydro_w"].shape)
-        print("\033[92m[OK]\033[0m Day ", day+1, " completed.\n",
+        print_ok("Day ", day+1, " completed.\n",
               "Current time = ", current_time, " seconds.\n")
 
     end_clock = time.time()
-    print("\033[92m[OK]\033[0m Step 2 (bootstrap) completed.\n",
+    print_ok("Step 2 (bootstrap) completed.\n",
           "Current time = ", current_time, " seconds.\n",
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
@@ -238,14 +241,14 @@ def main():
                                               block_vars, current_time, duration)
 
     end_clock = time.time()
-    print("\033[92m[OK]\033[0m Step 3 (prediction) completed.\n",
+    print_ok("Step 3 (prediction) completed.\n",
           "Current time = ", current_time, " seconds.\n",
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
 
     ### Step 4: Clean up and finalize ###
     block.finalize(block_vars, current_time)
-    print("\033[92m[OK]\033[0m Simulation finalized at time = ", current_time, " seconds.")
+    print_ok("Simulation finalized at time = ", current_time, " seconds.")
 
 if __name__ == "__main__":
     main()
