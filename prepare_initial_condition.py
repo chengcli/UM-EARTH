@@ -645,7 +645,7 @@ def main():
     if args.stop_after == 5 or args.stop_after == 6:
         print(f"  - regridded_{location_id}_{end_date}_blocks/*_block_*_*.nc (Step 5)")
         if args.stop_after != 5:
-            print(f"  - regridded_{location_id}_{end_date}_tensors/*_block_*.part(Step 6)")
+            print(f"  - regridded_{location_id}_{end_date}_tensors/*_block_*.part (Step 6)")
             print()
             print(f"\033[92m[OK]\033[0m The PyTorch tensor files in regridded_{location_id}_{end_date}_tensors/ are ready for {location_name} simulations.")
         else:

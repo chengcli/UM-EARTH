@@ -91,9 +91,9 @@ if __name__ == "__main__":
                     x[n,k,j,i] = n + k + j + i
 
     print("Original x :", x)
-    y = conservative_refine(x)
+    y = conservative_refine(x, 1)
     print("Refined y :", y)
-    z = conservative_coarsen(y)
+    z = conservative_coarsen(y, 1)
     print("Coarsened z :", z)
 
     assert torch.allclose(x, z), "The coarsened tensor does not match the original!"

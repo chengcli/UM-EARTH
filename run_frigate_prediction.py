@@ -6,10 +6,15 @@ from snapy import MeshBlockOptions, MeshBlock
 from snapy import kIDN, kIPR, kICY, kIV1, kIV2, kIV3
 from kintera import ThermoX, KineticsOptions, Kinetics
 from refine_utils import conservative_refine, refine_meshblock
-from paddle import (
-    setup_profile,
-    evolve_kinetics,
-)
+from paddle import evolve_kinetics
+
+def print_ok(*args):
+    message = " ".join(str(arg) for arg in args)
+    print("\033[92m[OK]\033[0m ", message, flush=True)
+
+def print_err(*args):
+    message = " ".join(str(arg) for arg in args)
+    print("\033[91m[ERR]\033[0m ", message, flush=True)
 
 def call_user_output(bvars: dict[str, torch.Tensor]):
     hydro_w = bvars["hydro_w"]
@@ -49,7 +54,6 @@ def create_block(config_file: str):
 
 def load_ecmwf_input(input_file: str, index: int = 0,
                      device: torch.device = torch.device("cpu")):
-    print('device = ', device)
     module = torch.jit.load(input_file)
     block_vars = {}
     for name, data in module.named_buffers(recurse=True):
@@ -124,9 +128,9 @@ def run_simulation_one_day(block: MeshBlock,
 
     for chunk in range(4):
         block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                                  block_vars, current_time, 216.)
+                                                  block_vars, current_time, 21600.)
         block_vars = nudge_from_ecmwf(block_vars, input_file)
-        print("  Completed chunk ", chunk+1, "/ 4 for the day.")
+        print_ok("Completed chunk ", chunk+1, "/ 4 for the day.")
 
     return block_vars, current_time
 
@@ -189,12 +193,12 @@ def main():
 
     block.options.hydro().disable_flux_x2(True)
     block.options.hydro().disable_flux_x3(True)
-    block.options.hydro().icorr().scheme(9)
-    block.options.intg().cfl(0.05)
+    block.options.hydro().icorr().scheme(1)
+    block.options.intg().cfl(0.45)
 
     block.make_outputs(block_vars, current_time)
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                              block_vars, current_time, 100.)
+                                              block_vars, current_time, 2400.)
 
     current_time = 0.
     end_clock = time.time()
@@ -210,7 +214,7 @@ def main():
     block.options.hydro().icorr().scheme(0)
     block.options.intg().cfl(0.45)
 
-    days = 1
+    days = 3
     for day in range(days):
         block_vars, current_time = run_simulation_one_day(block, thermo_x, kinet,
                                                           block_vars, current_time,
@@ -227,12 +231,9 @@ def main():
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
 
-    block.finalize(block_vars, current_time)
-    exit(0)
-
-    ### Step 3: Run prediction for next week ###
+    ### Step 3: Run prediction for the next day ###
     start_clock = end_clock
-    duration = days * 86400.  # 7 days in seconds 
+    duration = 86400.  # one day in seconds 
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                               block_vars, current_time, duration)
 
