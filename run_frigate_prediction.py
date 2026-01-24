@@ -186,9 +186,9 @@ def run_spinup(block: MeshBlock,
         #block_vars = nudge_from_ecmwf(block, block_vars, input_file, chunk + 1)
         print_ok("Completed chunk ", chunk+1, "/ 3 for the day.\n",
                  "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-        print_ok("  Refined variable shape = ", block_vars["hydro_w"].shape)
+        print_ok("Refined variable shape = ", block_vars["hydro_w"].shape)
 
-    return block_vars, current_time
+    return block, thermo_x, kinet, block_vars, current_time
 
 def refine_simulation(block: MeshBlock,
                       block_vars: dict[str, torch.Tensor],
@@ -252,10 +252,16 @@ def main():
     #block.options.intg().cfl(0.45)
 
     block.make_outputs(block_vars, current_time)
+    for output in block.options.outputs():
+        output.dt(600.)
+
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                               block_vars, current_time, 1200.)
 
     current_time = 0.
+    for out in block.get_outputs():
+        out.next_time = 3600.
+
     end_clock = time.time()
     print_ok("Step 1 (hydrostatic adjustment) completed.\n",
           "Current time = ", current_time, " seconds.\n",
@@ -266,16 +272,12 @@ def main():
     start_clock = end_clock
     block.options.hydro().disable_flux_x2(False)
     block.options.hydro().disable_flux_x3(False)
-    block.options.hydro().icorr().scheme(0)
+    #block.options.hydro().icorr().scheme(0)
     #block.options.intg().cfl(0.45)
 
-    days = 1
-    for day in range(days):
-        block_vars, current_time = run_spinup(block, thermo_x, kinet,
-                                              block_vars, current_time, 
-                                              args.config, args.input)
-        print_ok("Day ", day+1, " completed.\n",
-              "Current time = ", current_time, " seconds.\n")
+    block, thermo_x, kinet, block_vars, current_time = run_spinup(
+            block, thermo_x, kinet, block_vars, current_time, 
+            args.config, args.input)
 
     end_clock = time.time()
     print_ok("Step 2 (spinup) completed.\n",
@@ -286,8 +288,6 @@ def main():
     ### Step 3: Run prediction for the next 32 hours ###
     start_clock = end_clock
     duration = 32 * 3600.  # seconds 
-    for output in block.options.outputs():
-        output.dt(3600.)
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                               block_vars, current_time, duration)
 
