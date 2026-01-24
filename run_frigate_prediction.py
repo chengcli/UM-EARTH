@@ -5,7 +5,12 @@ import time
 from snapy import MeshBlockOptions, MeshBlock
 from snapy import kIDN, kIPR, kICY, kIV1, kIV2, kIV3
 from kintera import ThermoX, KineticsOptions, Kinetics
-from refine_utils import conservative_refine, refine_meshblock
+from refine_utils import(
+        conservative_refine, 
+        refine_meshblock,
+        refine_spatial,
+        coarsen_spatial
+        )
 from paddle import evolve_kinetics
 
 def print_ok(*args):
@@ -113,7 +118,50 @@ def run_simulation(block: MeshBlock,
 
     return block_vars, current_time
 
-def nudge_from_ecmwf(block_vars: dict[str, torch.Tensor], input_file: str):
+def nudge_from_ecmwf(block: MeshBlock,
+                     block_vars: dict[str, torch.Tensor],
+                     input_file: str,
+                     index: int = 0):
+    # downsampling to interpolated ECMWF resolution
+    device = block_vars["hydro_u"].device
+    nghost = block.options.coord().nghost()
+    hydro_u = block_vars["hydro_u"].clone()
+
+    for n in range(index):
+        u_int = hydro_u[..., nghost:-nghost, nghost:-nghost, :]
+        u_int_coarsened = coarsen_spatial(u_int)
+        dims = list(hydro_u.shape)
+        dims[-2] = (dims[-2] - 2 * nghost) // 2 + 2 * nghost
+        dims[-3] = (dims[-3] - 2 * nghost) // 2 + 2 * nghost
+        hydro_u = torch.zeros(dims, dtype=hydro_u.dtype, device=device)
+        hydro_u[..., nghost:-nghost, nghost:-nghost, :] = u_int_coarsened
+
+    # read nudge data from ECMWF input
+    nudge_vars = load_ecmwf_input(input_file, index=index, device=device)
+    eos = block.module("hydro.eos")
+    du = eos.compute("W->U", (nudge_vars["hydro_w"],)) - hydro_u
+
+    # upsample back to original resolution
+    for n in range(index):
+        du_int = du[..., nghost:-nghost, nghost:-nghost, :]
+        du_int_refined = refine_spatial(u_int, "area")
+        dims = list(du.shape)
+        dims[-2] = (dims[-2] - 2 * nghost) * 2 + 2 * nghost
+        dims[-3] = (dims[-3] - 2 * nghost) * 2 + 2 * nghost
+        du = torch.zeros(dims, dtype=hydro_u.dtype, device=device)
+        du[..., nghost:-nghost, nghost:-nghost, :] = du_int_refined
+
+    # nudge hydro_u
+    alpha = 0.9
+    hydro_u = block_vars["hydro_u"]
+    hydro_u[kIDN] += du[kIDN] * alpha
+    hydro_u[kIPR] += du[kIPR] * alpha
+    hydro_u[kIV2] += du[kIV2] * alpha
+    hydro_u[kIV3] += du[kIV3] * alpha
+
+    for n in range(kICY, hydro_u.shape[0]):
+        hydro_u[n] += du[n] * alpha
+
     return block_vars
 
 def run_spinup(block: MeshBlock, 
@@ -121,25 +169,32 @@ def run_spinup(block: MeshBlock,
                kinet: Kinetics,
                block_vars: dict[str, torch.Tensor],
                current_time: float,
+               config_file: str,
                input_file: str):
     for output in block.options.outputs():
         output.dt(3600.)
 
-    for chunk in range(4):
+    duration = 2160.  # seconds (6 hours)
+    for chunk in range(3):
+        start_clock = time.time()
         block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                                  block_vars, current_time, 21600.)
+                                                  block_vars, current_time, duration)
         block, thermo_x, kinet, block_vars = refine_simulation(
-                block, block_vars, args.config, device)
-        block_vars = nudge_from_ecmwf(block_vars, input_file)
-        print_ok("Completed chunk ", chunk+1, "/ 4 for the day.")
+                block, block_vars, config_file)
+        end_clock = time.time()
+
+        #block_vars = nudge_from_ecmwf(block, block_vars, input_file, chunk + 1)
+        print_ok("Completed chunk ", chunk+1, "/ 3 for the day.\n",
+                 "Elapsed time = ", end_clock - start_clock, " seconds.\n")
         print_ok("  Refined variable shape = ", block_vars["hydro_w"].shape)
 
     return block_vars, current_time
 
 def refine_simulation(block: MeshBlock,
                       block_vars: dict[str, torch.Tensor],
-                      config_file: str,
-                      device: torch.device = torch.device("cpu")):
+                      config_file: str):
+    device = block_vars["hydro_u"].device
+
     # refined meshblock
     block = refine_meshblock(block)
     block.to(device)
@@ -188,17 +243,17 @@ def main():
     block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
     block_vars, current_time = block.initialize(block_vars)
 
-    ### Step 1: Run hydrostatic adjustment for 2400 seconds ###
+    ### Step 1: Run hydrostatic adjustment for 1200 seconds ###
     start_clock = time.time()
 
     block.options.hydro().disable_flux_x2(True)
     block.options.hydro().disable_flux_x3(True)
     block.options.hydro().icorr().scheme(1)
-    block.options.intg().cfl(0.45)
+    #block.options.intg().cfl(0.45)
 
     block.make_outputs(block_vars, current_time)
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                              block_vars, current_time, 2400.)
+                                              block_vars, current_time, 1200.)
 
     current_time = 0.
     end_clock = time.time()
@@ -212,12 +267,13 @@ def main():
     block.options.hydro().disable_flux_x2(False)
     block.options.hydro().disable_flux_x3(False)
     block.options.hydro().icorr().scheme(0)
-    block.options.intg().cfl(0.45)
+    #block.options.intg().cfl(0.45)
 
     days = 1
     for day in range(days):
         block_vars, current_time = run_spinup(block, thermo_x, kinet,
-                                              block_vars, current_time, args.input)
+                                              block_vars, current_time, 
+                                              args.config, args.input)
         print_ok("Day ", day+1, " completed.\n",
               "Current time = ", current_time, " seconds.\n")
 
@@ -227,9 +283,9 @@ def main():
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
 
-    ### Step 3: Run prediction for the next day ###
+    ### Step 3: Run prediction for the next 32 hours ###
     start_clock = end_clock
-    duration = 86400.  # one day in seconds 
+    duration = 32 * 3600.  # seconds 
     for output in block.options.outputs():
         output.dt(3600.)
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
