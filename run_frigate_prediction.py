@@ -116,21 +116,23 @@ def run_simulation(block: MeshBlock,
 def nudge_from_ecmwf(block_vars: dict[str, torch.Tensor], input_file: str):
     return block_vars
 
-def run_simulation_one_day(block: MeshBlock, 
-                           thermo_x: ThermoX,
-                           kinet: Kinetics,
-                           block_vars: dict[str, torch.Tensor],
-                           current_time: float,
-                           input_file: str):
-
+def run_spinup(block: MeshBlock, 
+               thermo_x: ThermoX,
+               kinet: Kinetics,
+               block_vars: dict[str, torch.Tensor],
+               current_time: float,
+               input_file: str):
     for output in block.options.outputs():
         output.dt(3600.)
 
     for chunk in range(4):
         block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                                   block_vars, current_time, 21600.)
+        block, thermo_x, kinet, block_vars = refine_simulation(
+                block, block_vars, args.config, device)
         block_vars = nudge_from_ecmwf(block_vars, input_file)
         print_ok("Completed chunk ", chunk+1, "/ 4 for the day.")
+        print_ok("  Refined variable shape = ", block_vars["hydro_w"].shape)
 
     return block_vars, current_time
 
@@ -184,8 +186,6 @@ def main():
         print(f"{key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
 
     block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
-    hydro_w = block_vars["hydro_w"]
-
     block_vars, current_time = block.initialize(block_vars)
 
     ### Step 1: Run hydrostatic adjustment for 2400 seconds ###
@@ -207,29 +207,22 @@ def main():
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
 
-    block.finalize(block_vars, current_time)
-    exit()
-
-    ### Step 2: Run simulation for 7 days with increasing resolution ###
+    ### Step 2: Run Spin-up for 1 day with increasing resolution ###
     start_clock = end_clock
     block.options.hydro().disable_flux_x2(False)
     block.options.hydro().disable_flux_x3(False)
     block.options.hydro().icorr().scheme(0)
     block.options.intg().cfl(0.45)
 
-    days = 3
+    days = 1
     for day in range(days):
-        block_vars, current_time = run_simulation_one_day(block, thermo_x, kinet,
-                                                          block_vars, current_time,
-                                                          args.input)
-        block, thermo_x, kinet, block_vars = refine_simulation(
-                block, block_vars, args.config, device)
-        print("  Refined variable shape = ", block_vars["hydro_w"].shape)
+        block_vars, current_time = run_spinup(block, thermo_x, kinet,
+                                              block_vars, current_time, args.input)
         print_ok("Day ", day+1, " completed.\n",
               "Current time = ", current_time, " seconds.\n")
 
     end_clock = time.time()
-    print_ok("Step 2 (bootstrap) completed.\n",
+    print_ok("Step 2 (spinup) completed.\n",
           "Current time = ", current_time, " seconds.\n",
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
@@ -237,6 +230,8 @@ def main():
     ### Step 3: Run prediction for the next day ###
     start_clock = end_clock
     duration = 86400.  # one day in seconds 
+    for output in block.options.outputs():
+        output.dt(3600.)
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                               block_vars, current_time, duration)
 
