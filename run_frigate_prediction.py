@@ -119,48 +119,58 @@ def run_simulation(block: MeshBlock,
     return block_vars, current_time
 
 def nudge_from_ecmwf(block: MeshBlock,
+                     thermo_x: ThermoX,
+                     kinet: Kinetics,
                      block_vars: dict[str, torch.Tensor],
-                     input_file: str,
+                     nudge_vars: dict[str, torch.Tensor],
                      index: int = 0):
     # downsampling to interpolated ECMWF resolution
     device = block_vars["hydro_u"].device
     nghost = block.options.coord().nghost()
     hydro_u = block_vars["hydro_u"].clone()
 
-    for n in range(index):
+    for n in range(min(index, 2)):
         u_int = hydro_u[..., nghost:-nghost, nghost:-nghost, :]
         u_int_coarsened = coarsen_spatial(u_int)
         dims = list(hydro_u.shape)
-        dims[-2] = (dims[-2] - 2 * nghost) // 2 + 2 * nghost
-        dims[-3] = (dims[-3] - 2 * nghost) // 2 + 2 * nghost
+        dims[-2] = dims[-2] // 2 + nghost
+        dims[-3] = dims[-3] // 2 + nghost
         hydro_u = torch.zeros(dims, dtype=hydro_u.dtype, device=device)
         hydro_u[..., nghost:-nghost, nghost:-nghost, :] = u_int_coarsened
 
     # read nudge data from ECMWF input
-    nudge_vars = load_ecmwf_input(input_file, index=index, device=device)
-    eos = block.module("hydro.eos")
-    du = eos.compute("W->U", (nudge_vars["hydro_w"],)) - hydro_u
+    du = nudge_vars[f"hydro_u{index}"] - hydro_u
 
     # upsample back to original resolution
-    for n in range(index):
-        du_int = du[..., nghost:-nghost, nghost:-nghost, :]
-        du_int_refined = refine_spatial(u_int, "area")
-        dims = list(du.shape)
-        dims[-2] = (dims[-2] - 2 * nghost) * 2 + 2 * nghost
-        dims[-3] = (dims[-3] - 2 * nghost) * 2 + 2 * nghost
-        du = torch.zeros(dims, dtype=hydro_u.dtype, device=device)
-        du[..., nghost:-nghost, nghost:-nghost, :] = du_int_refined
+    for n in range(min(index, 2)):
+        du_refined = refine_spatial(du, "area")
+        du = du_refined[..., nghost:-nghost, nghost:-nghost, :]
 
     # nudge hydro_u
-    alpha = 0.9
-    hydro_u = block_vars["hydro_u"]
-    hydro_u[kIDN] += du[kIDN] * alpha
-    hydro_u[kIPR] += du[kIPR] * alpha
-    hydro_u[kIV2] += du[kIV2] * alpha
-    hydro_u[kIV3] += du[kIV3] * alpha
+    block_vars["hydro_u"] += du
 
-    for n in range(kICY, hydro_u.shape[0]):
-        hydro_u[n] += du[n] * alpha
+    # run hydrostatic adjustment for 600 seconds after nudging
+    block.options.hydro().disable_flux_x2(True)
+    block.options.hydro().disable_flux_x3(True)
+    block_vars, _ = run_simulation(block, thermo_x, kinet,
+                                   block_vars, 0., 600.)
+
+    print_ok("Nudging from ECMWF data at index ", index, " completed.",
+             "Min/Max density change = ", du[kIDN].min().item(), "/",
+             du[kIDN].max().item(), '\n',
+             "Min/Max pressure change = ", du[kIPR].min().item(), "/",
+             du[kIPR].max().item(), '\n',
+             "Min/Max vel1 change = ", du[kIV1].min().item(), "/",
+             du[kIV1].max().item(), '\n',
+             "Min/Max vel2 change = ", du[kIV2].min().item(), "/",
+             du[kIV2].max().item(), '\n',
+             "Min/Max vel3 change = ", du[kIV3].min().item(), "/",
+             du[kIV3].max().item(), '\n',
+             "Min/Max tracer change = ", du[kICY:].min().item(), "/",
+             du[kICY:].max().item())
+
+    block.options.hydro().disable_flux_x2(False)
+    block.options.hydro().disable_flux_x3(False)
 
     return block_vars
 
@@ -168,23 +178,29 @@ def run_spinup(block: MeshBlock,
                thermo_x: ThermoX,
                kinet: Kinetics,
                block_vars: dict[str, torch.Tensor],
+               nudge_vars: dict[str, torch.Tensor],
                current_time: float,
-               config_file: str,
-               input_file: str):
+               config_file: str):
     for output in block.options.outputs():
         output.dt(3600.)
 
     duration = 2160.  # seconds (6 hours)
-    for chunk in range(3):
+    for chunk in range(1, 4):
         start_clock = time.time()
         block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                                   block_vars, current_time, duration)
-        block, thermo_x, kinet, block_vars = refine_simulation(
-                block, block_vars, config_file)
-        end_clock = time.time()
+        if chunk < 3:
+            block, thermo_x, kinet, block_vars = refine_simulation(
+                    block, block_vars, config_file)
+        else:
+            for output in block.options.outputs():
+                output.super_resolution(True)
 
-        #block_vars = nudge_from_ecmwf(block, block_vars, input_file, chunk + 1)
-        print_ok("Completed chunk ", chunk+1, "/ 3 for the day.\n",
+        block_vars = nudge_from_ecmwf(block, thermo_x, kinet,
+                                      block_vars, nudge_vars, chunk)
+        end_clock = time.time()
+        print_ok("Completed chunk ", chunk, "/ 3 for the day.\n",
+                 "Current time = ", current_time, " seconds.\n",
                  "Elapsed time = ", end_clock - start_clock, " seconds.\n")
         print_ok("Refined variable shape = ", block_vars["hydro_w"].shape)
 
@@ -243,24 +259,29 @@ def main():
     block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
     block_vars, current_time = block.initialize(block_vars)
 
-    ### Step 1: Run hydrostatic adjustment for 1200 seconds ###
+    # compute nudge variables
+    nudge_vars = {}
+    eos = block.module("hydro.eos")
+    for n in range(1, 4):
+        var = load_ecmwf_input(args.input, index=n, device=device)
+        nudge_vars[f"hydro_u{n}"] = eos.compute("W->U", (var["hydro_w"],))
+        print(f'nudge_vars hydro_u{n} shape:', nudge_vars[f"hydro_u{n}"].shape)
+
+    ### Step 1: Run hydrostatic adjustment for 600 seconds ###
     start_clock = time.time()
 
     block.options.hydro().disable_flux_x2(True)
     block.options.hydro().disable_flux_x3(True)
-    block.options.hydro().icorr().scheme(1)
+    #block.options.hydro().icorr().scheme(1)
     #block.options.intg().cfl(0.45)
 
     block.make_outputs(block_vars, current_time)
-    for output in block.options.outputs():
-        output.dt(600.)
-
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                              block_vars, current_time, 1200.)
+                                              block_vars, current_time, 600.)
 
     current_time = 0.
-    for out in block.get_outputs():
-        out.next_time = 3600.
+    block.options.hydro().disable_flux_x2(False)
+    block.options.hydro().disable_flux_x3(False)
 
     end_clock = time.time()
     print_ok("Step 1 (hydrostatic adjustment) completed.\n",
@@ -270,14 +291,12 @@ def main():
 
     ### Step 2: Run Spin-up for 1 day with increasing resolution ###
     start_clock = end_clock
-    block.options.hydro().disable_flux_x2(False)
-    block.options.hydro().disable_flux_x3(False)
     #block.options.hydro().icorr().scheme(0)
     #block.options.intg().cfl(0.45)
 
     block, thermo_x, kinet, block_vars, current_time = run_spinup(
-            block, thermo_x, kinet, block_vars, current_time, 
-            args.config, args.input)
+            block, thermo_x, kinet, block_vars, nudge_vars,
+            current_time, args.config)
 
     end_clock = time.time()
     print_ok("Step 2 (spinup) completed.\n",
