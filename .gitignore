@@ -17,3 +17,9 @@ __pycache__/
 
 # part file
 *.part
+
+# log file
+log*
+
+# junk
+z.junk/*

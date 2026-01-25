@@ -64,11 +64,26 @@ def conservative_coarsen(y: torch.Tensor, nghost: int):
 
 def refine_meshblock(block: MeshBlock) -> MeshBlock:
     op = block.options
+
+    file_numbers, next_times = [], []
+    for out in block.get_outputs():
+        file_numbers.append(out.file_number)
+        next_times.append(out.next_time)
+
+    print('file numbers:', file_numbers)
+    print('next times:', next_times)
+
     if op.coord().nx2() > 1:
         op.coord().nx2(op.coord().nx2() * 2)
     if op.coord().nx3() > 1:
         op.coord().nx3(op.coord().nx3() * 2)
-    return MeshBlock(op)
+    block = MeshBlock(op)
+
+    for n, out in enumerate(block.get_outputs()):
+        out.file_number = file_numbers[n]
+        out.next_time = next_times[n]
+
+    return block
 
 def coarsen_meshblock(block: MeshBlock) -> MeshBlock:
     op = block.options
@@ -91,9 +106,9 @@ if __name__ == "__main__":
                     x[n,k,j,i] = n + k + j + i
 
     print("Original x :", x)
-    y = conservative_refine(x)
+    y = conservative_refine(x, 1)
     print("Refined y :", y)
-    z = conservative_coarsen(y)
+    z = conservative_coarsen(y, 1)
     print("Coarsened z :", z)
 
     assert torch.allclose(x, z), "The coarsened tensor does not match the original!"

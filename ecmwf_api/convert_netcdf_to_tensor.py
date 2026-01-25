@@ -197,15 +197,15 @@ def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None)
     print(f"  Combined cswc + crwc -> q3")
     
     # Step 2: Aggregate into hydro_w tensor
-    # Order: (rho, w, v, u, p, q, q2, q3)
+    # Order: (rho, w, u, v, p, q, q2, q3)
     # Output shape: (time, nvar=8, x3, x2, x1)
     # Note: Need to reorder axes from (time, x1, x2, x3) to (time, x1, x2, x3) -> (time, x3, x2, x1)
     
     var_list = [
         variables['rho'],
         variables['w'],
-        variables['v'],
         variables['u'],
+        variables['v'],
         variables['p'],
         variables['q'],
         q2,

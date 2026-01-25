@@ -5,11 +5,21 @@ import time
 from snapy import MeshBlockOptions, MeshBlock
 from snapy import kIDN, kIPR, kICY, kIV1, kIV2, kIV3
 from kintera import ThermoX, KineticsOptions, Kinetics
-from refine_utils import conservative_refine, refine_meshblock
-from paddle import (
-    setup_profile,
-    evolve_kinetics,
-)
+from refine_utils import(
+        conservative_refine, 
+        refine_meshblock,
+        refine_spatial,
+        coarsen_spatial
+        )
+from paddle import evolve_kinetics
+
+def print_ok(*args):
+    message = " ".join(str(arg) for arg in args)
+    print("\033[92m[OK]\033[0m ", message, flush=True)
+
+def print_err(*args):
+    message = " ".join(str(arg) for arg in args)
+    print("\033[91m[ERR]\033[0m ", message, flush=True)
 
 def call_user_output(bvars: dict[str, torch.Tensor]):
     hydro_w = bvars["hydro_w"]
@@ -49,7 +59,6 @@ def create_block(config_file: str):
 
 def load_ecmwf_input(input_file: str, index: int = 0,
                      device: torch.device = torch.device("cpu")):
-    print('device = ', device)
     module = torch.jit.load(input_file)
     block_vars = {}
     for name, data in module.named_buffers(recurse=True):
@@ -109,31 +118,100 @@ def run_simulation(block: MeshBlock,
 
     return block_vars, current_time
 
-def nudge_from_ecmwf(block_vars: dict[str, torch.Tensor], input_file: str):
+def nudge_from_ecmwf(block: MeshBlock,
+                     thermo_x: ThermoX,
+                     kinet: Kinetics,
+                     block_vars: dict[str, torch.Tensor],
+                     nudge_vars: dict[str, torch.Tensor],
+                     index: int = 0):
+    # downsampling to interpolated ECMWF resolution
+    device = block_vars["hydro_u"].device
+    nghost = block.options.coord().nghost()
+    hydro_u = block_vars["hydro_u"].clone()
+
+    for n in range(min(index, 2)):
+        u_int = hydro_u[..., nghost:-nghost, nghost:-nghost, :]
+        u_int_coarsened = coarsen_spatial(u_int)
+        dims = list(hydro_u.shape)
+        dims[-2] = dims[-2] // 2 + nghost
+        dims[-3] = dims[-3] // 2 + nghost
+        hydro_u = torch.zeros(dims, dtype=hydro_u.dtype, device=device)
+        hydro_u[..., nghost:-nghost, nghost:-nghost, :] = u_int_coarsened
+
+    # read nudge data from ECMWF input
+    du = nudge_vars[f"hydro_u{index}"] - hydro_u
+
+    # upsample back to original resolution
+    for n in range(min(index, 2)):
+        du_refined = refine_spatial(du, "area")
+        du = du_refined[..., nghost:-nghost, nghost:-nghost, :]
+
+    # nudge hydro_u
+    block_vars["hydro_u"] += du
+
+    # run hydrostatic adjustment for 600 seconds after nudging
+    block.options.hydro().disable_flux_x2(True)
+    block.options.hydro().disable_flux_x3(True)
+    block_vars, _ = run_simulation(block, thermo_x, kinet,
+                                   block_vars, 0., 600.)
+
+    print_ok("Nudging from ECMWF data at index ", index, " completed.\n",
+             "Min/Max density change = ", du[kIDN].min().item(), "/",
+             du[kIDN].max().item(), '\n',
+             "Min/Max pressure change = ", du[kIPR].min().item(), "/",
+             du[kIPR].max().item(), '\n',
+             "Min/Max vel1 change = ", du[kIV1].min().item(), "/",
+             du[kIV1].max().item(), '\n',
+             "Min/Max vel2 change = ", du[kIV2].min().item(), "/",
+             du[kIV2].max().item(), '\n',
+             "Min/Max vel3 change = ", du[kIV3].min().item(), "/",
+             du[kIV3].max().item(), '\n',
+             "Min/Max tracer change = ", du[kICY:].min().item(), "/",
+             du[kICY:].max().item())
+
+    block.options.hydro().disable_flux_x2(False)
+    block.options.hydro().disable_flux_x3(False)
+
     return block_vars
 
-def run_simulation_one_day(block: MeshBlock, 
-                           thermo_x: ThermoX,
-                           kinet: Kinetics,
-                           block_vars: dict[str, torch.Tensor],
-                           current_time: float,
-                           input_file: str):
-
+def run_spinup(block: MeshBlock, 
+               thermo_x: ThermoX,
+               kinet: Kinetics,
+               block_vars: dict[str, torch.Tensor],
+               nudge_vars: dict[str, torch.Tensor],
+               current_time: float,
+               config_file: str):
     for output in block.options.outputs():
         output.dt(3600.)
 
-    for chunk in range(4):
+    duration = 2160.  # seconds (6 hours)
+    for chunk in range(1, 4):
+        start_clock = time.time()
         block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                                  block_vars, current_time, 216.)
-        block_vars = nudge_from_ecmwf(block_vars, input_file)
-        print("  Completed chunk ", chunk+1, "/ 4 for the day.")
+                                                  block_vars, current_time, duration)
+        if chunk < 3:
+            block, thermo_x, kinet, block_vars = refine_simulation(
+                    block, block_vars, config_file)
+        else:
+            pass
+            #for output in block.options.outputs():
+            #    output.super_resolution(True)
 
-    return block_vars, current_time
+        block_vars = nudge_from_ecmwf(block, thermo_x, kinet,
+                                      block_vars, nudge_vars, chunk)
+        end_clock = time.time()
+        print_ok("Completed chunk ", chunk, "/ 3 for the day.\n",
+                 "Current time = ", current_time, " seconds.\n",
+                 "Elapsed time = ", end_clock - start_clock, " seconds.\n")
+        print_ok("Refined variable shape = ", block_vars["hydro_w"].shape)
+
+    return block, thermo_x, kinet, block_vars, current_time
 
 def refine_simulation(block: MeshBlock,
                       block_vars: dict[str, torch.Tensor],
-                      config_file: str,
-                      device: torch.device = torch.device("cpu")):
+                      config_file: str):
+    device = block_vars["hydro_u"].device
+
     # refined meshblock
     block = refine_meshblock(block)
     block.to(device)
@@ -180,71 +258,68 @@ def main():
         print(f"{key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
 
     block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
-    hydro_w = block_vars["hydro_w"]
-
     block_vars, current_time = block.initialize(block_vars)
 
-    ### Step 1: Run hydrostatic adjustment for 2400 seconds ###
+    # compute nudge variables
+    nudge_vars = {}
+    eos = block.module("hydro.eos")
+    for n in range(1, 4):
+        var = load_ecmwf_input(args.input, index=n, device=device)
+        nudge_vars[f"hydro_u{n}"] = eos.compute("W->U", (var["hydro_w"],))
+        print(f'nudge_vars hydro_u{n} shape:', nudge_vars[f"hydro_u{n}"].shape)
+
+    ### Step 1: Run hydrostatic adjustment for 600 seconds ###
     start_clock = time.time()
 
     block.options.hydro().disable_flux_x2(True)
     block.options.hydro().disable_flux_x3(True)
-    block.options.hydro().icorr().scheme(9)
-    block.options.intg().cfl(0.05)
+    #block.options.hydro().icorr().scheme(1)
+    #block.options.intg().cfl(0.45)
 
     block.make_outputs(block_vars, current_time)
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                              block_vars, current_time, 100.)
+                                              block_vars, current_time, 600.)
 
     current_time = 0.
-    end_clock = time.time()
-    print("\033[92m[OK]\033[0m Step 1 (hydrostatic adjustment) completed.\n",
-          "Current time = ", current_time, " seconds.\n",
-          "Current cycle = ", block.cycle(), ".\n",
-          "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-
-    ### Step 2: Run simulation for 7 days with increasing resolution ###
-    start_clock = end_clock
     block.options.hydro().disable_flux_x2(False)
     block.options.hydro().disable_flux_x3(False)
-    block.options.hydro().icorr().scheme(0)
-    block.options.intg().cfl(0.45)
-
-    days = 1
-    for day in range(days):
-        block_vars, current_time = run_simulation_one_day(block, thermo_x, kinet,
-                                                          block_vars, current_time,
-                                                          args.input)
-        block, thermo_x, kinet, block_vars = refine_simulation(
-                block, block_vars, args.config, device)
-        print("  Refined variable shape = ", block_vars["hydro_w"].shape)
-        print("\033[92m[OK]\033[0m Day ", day+1, " completed.\n",
-              "Current time = ", current_time, " seconds.\n")
 
     end_clock = time.time()
-    print("\033[92m[OK]\033[0m Step 2 (bootstrap) completed.\n",
+    print_ok("Step 1 (hydrostatic adjustment) completed.\n",
           "Current time = ", current_time, " seconds.\n",
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
 
-    block.finalize(block_vars, current_time)
-    exit(0)
-
-    ### Step 3: Run prediction for next week ###
+    ### Step 2: Run Spin-up for 1 day with increasing resolution ###
     start_clock = end_clock
-    duration = days * 86400.  # 7 days in seconds 
+    #block.options.hydro().icorr().scheme(0)
+    #block.options.intg().cfl(0.45)
+
+    block, thermo_x, kinet, block_vars, current_time = run_spinup(
+            block, thermo_x, kinet, block_vars, nudge_vars,
+            current_time, args.config)
+
+    end_clock = time.time()
+    print_ok("Step 2 (spinup) completed.\n",
+          "Current time = ", current_time, " seconds.\n",
+          "Current cycle = ", block.cycle(), ".\n",
+          "Elapsed time = ", end_clock - start_clock, " seconds.\n")
+
+    ### Step 3: Run prediction for the next 32 hours ###
+    start_clock = end_clock
+    duration = 32 * 3600.  # seconds 
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                               block_vars, current_time, duration)
 
     end_clock = time.time()
-    print("\033[92m[OK]\033[0m Step 3 (prediction) completed.\n",
+    print_ok("Step 3 (prediction) completed.\n",
           "Current time = ", current_time, " seconds.\n",
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
 
     ### Step 4: Clean up and finalize ###
     block.finalize(block_vars, current_time)
-    print("\033[92m[OK]\033[0m Simulation finalized at time = ", current_time, " seconds.")
+    print_ok("Simulation finalized at time = ", current_time, " seconds.")
 
 if __name__ == "__main__":
     main()
