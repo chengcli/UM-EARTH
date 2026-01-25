@@ -106,12 +106,12 @@ boundary-condition:
 integration:
   # Integration parameters for atmospheric model
   # (Only start-date and end-date are used by the data fetching pipeline)
-  type: rk3                # Time integration method
-  cfl: 0.45                # CFL number for stability
-  implicit-scheme: 0       # Explicit time integration
-  nlim: -1                 # No step limit
-  tlim: {tlim}             # Simulation time (seconds)
-  ncycle_out: 10           # Diagnostic output frequency
+  type: rk3                 # Time integration method
+  cfl: 0.9                  # CFL number for stability
+  implicit-scheme: 1        # Explicit time integration
+  nlim: -1                  # No step limit
+  tlim: {tlim}              # Simulation time (seconds)
+  ncycle_out: 10            # Diagnostic output frequency
   
   # Date for fetching ERA5 data (YYYY-MM-DD format)
   start-date: {start_date}
@@ -119,13 +119,13 @@ integration:
 
 outputs:
   - type: restart
-    dt: 2400.
+    dt: 3600.
   - type: netcdf
     variables: [prim, uov]
-    dt: 600.
+    dt: 3600.
   - type: netcdf
     variables: [thermo, path]
-    dt: 600.
+    dt: 3600.
 
 forcing:
   # Gravity for hydrostatic balance calculations
@@ -135,11 +135,11 @@ forcing:
 
   top-sponge-lyr:
     tau: 1.e4
-    width: 100.
+    width: 200.
 
   bot-sponge-lyr:
     tau: 1.e5
-    width: 100.
+    width: 200.
 
 sedimentation:
   radius:

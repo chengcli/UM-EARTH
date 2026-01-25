@@ -155,7 +155,7 @@ def nudge_from_ecmwf(block: MeshBlock,
     block_vars, _ = run_simulation(block, thermo_x, kinet,
                                    block_vars, 0., 600.)
 
-    print_ok("Nudging from ECMWF data at index ", index, " completed.",
+    print_ok("Nudging from ECMWF data at index ", index, " completed.\n",
              "Min/Max density change = ", du[kIDN].min().item(), "/",
              du[kIDN].max().item(), '\n',
              "Min/Max pressure change = ", du[kIPR].min().item(), "/",
@@ -193,8 +193,9 @@ def run_spinup(block: MeshBlock,
             block, thermo_x, kinet, block_vars = refine_simulation(
                     block, block_vars, config_file)
         else:
-            for output in block.options.outputs():
-                output.super_resolution(True)
+            pass
+            #for output in block.options.outputs():
+            #    output.super_resolution(True)
 
         block_vars = nudge_from_ecmwf(block, thermo_x, kinet,
                                       block_vars, nudge_vars, chunk)
