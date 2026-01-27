@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Refine a merged DEM by an arbitrary integer factor Nx using interpolation ,
+# Refine a merged DEM by an arbitrary integer factor Nx using interpolation,
 # and save ONLY as TorchScript (.pt). 
 
 # Usage:
@@ -33,6 +33,15 @@ import numpy as np
 import rasterio
 from scipy.interpolate import RegularGridInterpolator
 import torch
+
+# Path anchors (GitHub-safe)
+SCRIPT_DIR = Path(__file__).resolve().parent      # e.g., UM-EARTH/Topo
+PROJECT_ROOT = SCRIPT_DIR.parent                  # e.g., UM-EARTH 
+
+DEFAULT_LOCATIONS = PROJECT_ROOT / "locations.csv"
+DEFAULT_BASE_DIR  = PROJECT_ROOT / "Topo" / "Data" / "Raw"
+DEFAULT_OUT_DIR   = PROJECT_ROOT / "Topo" / "Data" / "Split"
+
 
 # TorchScript tensor saver (your preferred format)
 def save_tensors(tensor_map: dict[str, torch.Tensor], filename: str):
@@ -176,29 +185,34 @@ def estimate_bytes_float32(nlat: int, nlon: int) -> int:
 
 # CLI
 def parse_args():
-    ap = argparse.ArgumentParser(description="Refine merged DEM by arbitrary Nx and save as TorchScript (.pt).")
+    ap = argparse.ArgumentParser(
+        description="Refine merged DEM by power-of-two factor and save as TorchScript (.pt)."
+    )
     ap.add_argument("location_id", help="e.g. ws-site1")
-    ap.add_argument("factor", help="Nx like 2x, 3x, 10x (N>=2)")
+    ap.add_argument(
+        "factor",
+        help="Refinement factor (power of two), e.g. 2x, 4x, 8x (N >= 2)"
+    )
 
     ap.add_argument(
-        "--locations",
+         "--locations",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/locations.csv"),
-        help="Path to locations.csv"
+        default=DEFAULT_LOCATIONS,
+        help="Path to locations.csv (default: UM-EARTH/locations.csv)"
     )
 
     ap.add_argument(
         "--base-dir",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/Topo/Data/Raw"),
-        help="Directory containing <location>/<location>_merged_10m.tif"
+        default=DEFAULT_BASE_DIR,
+        help="Directory containing <location>/<location>_merged_10m.tif (default: UM-EARTH/Topo/Data/Raw)"
     )
 
     ap.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/Topo/Data/Split"),
-        help="Output directory for TorchScript .pt"
+        default=DEFAULT_OUT_DIR,
+        help="Output directory for TorchScript .pt (default: UM-EARTH/Topo/Data/Split)"
     )
 
     ap.add_argument(
@@ -277,7 +291,7 @@ def main():
             lon_bounds=topo.lon_bounds,
             nlat=n,
             nlon=n,
-         )
+        )
 
         print("Test topo shape:", topo.data.shape)
 

@@ -34,6 +34,10 @@ import argparse
 import subprocess
 import requests
 
+SCRIPT_DIR = Path(__file__).resolve().parent      # UM-EARTH/Topo
+PROJECT_ROOT = SCRIPT_DIR.parent                 # UM-EARTH
+DEFAULT_LOCATIONS = PROJECT_ROOT / "locations.csv"
+DEFAULT_OUT = PROJECT_ROOT / "Topo" / "Data" / "Raw"
 
 # 1.1 read locations.csv
 def load_locations(locations_file):
@@ -90,10 +94,10 @@ def parse_args():
         help="Location ID in locations.csv (e.g., ws-site1)"
     )
     ap.add_argument(
-        "--locations",
+       "--locations",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/locations.csv"),
-        help="Path to locations.csv"
+        default=DEFAULT_LOCATIONS,
+        help="Path to locations.csv (default: UM-EARTH/locations.csv)"
     )
     ap.add_argument(
     "--skip-download",
@@ -102,10 +106,10 @@ def parse_args():
     )
 
     ap.add_argument(
-        "--out",
+         "--out",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/Topo/Data/Raw/"),
-        help="Output directory"
+        default=DEFAULT_OUT,
+        help="Output directory (default: UM-EARTH/Topo/Data/Raw)"
     )
     return ap.parse_args()
 
@@ -273,11 +277,11 @@ def main():
         clipped_tifs.append(clip_fp)
         print(f"  clipped: {clip_fp.name}")
 
-        if not clipped_tifs:
-            print("No clipped tiles were produced.")
-            sys.exit(1)
+    if not clipped_tifs:
+        print("No clipped tiles were produced.")
+        sys.exit(1)
 
-        print(f"Clipped {len(clipped_tifs)} tile(s).")
+    print(f"Clipped {len(clipped_tifs)} tile(s).")
 
 
     # 3) Merge all clipped tiles into a single GeoTIFF
