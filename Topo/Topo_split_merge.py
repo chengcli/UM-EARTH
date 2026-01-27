@@ -76,10 +76,10 @@ class TopographyData:
 
 # locations.csv -> bounds
 def read_bounds_from_locations(locations_csv: Path, location_id: str):
-    """
-    Read (lat_bounds, lon_bounds) for a location_id from locations.csv.
-    Skips comment lines starting with '#'.
-    """
+
+    # Read (lat_bounds, lon_bounds) for a location_id from locations.csv.
+    # Skips comment lines starting with '#'.
+  
     if not locations_csv.exists():
         raise FileNotFoundError(locations_csv)
 
@@ -252,7 +252,7 @@ def main():
         sys.exit(1)
 
     # Input DEM (only read)
-    in_tif = args.base_dir / args.location_id / f"{args.location_id}_merged_10m.tif"
+    in_tif = args.base_dir / args.location_id / f"{args.location_id}_topo_40x40_mean.tif"
     if not in_tif.exists():
         print(f"ERROR: input not found: {in_tif}", file=sys.stderr)
         sys.exit(1)
