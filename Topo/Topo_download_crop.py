@@ -33,6 +33,14 @@ import sys, io, csv
 import argparse
 import subprocess
 import requests
+import numpy as np
+import rasterio
+from rasterio.windows import from_bounds
+from rasterio.windows import Window
+from rasterio.merge import merge
+from rasterio.transform import from_origin
+import math
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent      # UM-EARTH/Topo
 PROJECT_ROOT = SCRIPT_DIR.parent                 # UM-EARTH
@@ -308,5 +316,75 @@ def main():
     print("\nDONE.")
     print("Merged DEM:", merged_fp.resolve())
     
+    # 4 Coarsen merged DEM to an NxN lat/lon grid by computing cell mean
+    print("\nComputing coarse-grid cell mean from merged DEM...")
+
+    lon_min, lat_min, lon_max, lat_max = bbox  # bbox = (W,S,E,N)
+
+    nx = ny = 40  #
+
+    lon_edges = np.linspace(lon_min, lon_max, nx + 1)
+    lat_edges = np.linspace(lat_min, lat_max, ny + 1)
+
+    cell_mean = np.full((ny, nx), np.nan, dtype=np.float32)
+
+    with rasterio.open(merged_fp) as ds:
+        crs = ds.crs  # inherit DEM CRS (EPSG:4269)
+
+        for j in range(ny):  # j=0 is the southernmost cell
+            for i in range(nx):
+                w, e = lon_edges[i], lon_edges[i + 1]
+                s, n = lat_edges[j], lat_edges[j + 1]
+
+                win = from_bounds(w, s, e, n, ds.transform)
+
+                # Make sure window is within raster bounds
+                try:
+                    win = win.intersection(Window(0, 0, ds.width, ds.height))
+                except Exception:
+                    continue
+
+                if win.width <= 0 or win.height <= 0:
+                    continue
+
+                data = ds.read(1, window=win, masked=True)
+
+                # If fully masked or empty, keep NaN
+                if data.size > 0 and (not np.all(data.mask)):
+                    cell_mean[j, i] = float(data.mean())
+
+    # Write GeoTIFF (north-up expects first row = north), so flip vertically
+    cell_mean_northup = np.flipud(cell_mean)
+
+    dx = (lon_max - lon_min) / nx
+    dy = (lat_max - lat_min) / ny
+    transform = from_origin(lon_min, lat_max, dx, dy)  # (west, north, xsize, ysize)
+
+    out_tif = save_dir / f"{args.location_id}_topo_{nx}x{ny}_mean.tif"
+
+    profile2 = {
+        "driver": "GTiff",
+        "height": ny,
+        "width": nx,
+        "count": 1,
+        "dtype": "float32",
+        "crs": crs,
+        "transform": transform,
+        "nodata": -9999.0,
+    }
+
+    to_write = np.where(
+        np.isfinite(cell_mean_northup),
+        cell_mean_northup,
+        profile2["nodata"]
+    ).astype(np.float32)
+
+    with rasterio.open(out_tif, "w", **profile2) as dst:
+        dst.write(to_write, 1)
+
+    print("Saved coarse-mean GeoTIFF:", out_tif.resolve())
+    print("dx, dy (deg):", dx, dy)
+    print(f"{nx}x{ny} (south->north indexing) array:\n", cell_mean)
+
 if __name__ == "__main__":
     main()
