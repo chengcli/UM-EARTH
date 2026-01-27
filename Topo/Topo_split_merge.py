@@ -252,7 +252,7 @@ def main():
         sys.exit(1)
 
     # Input DEM (only read)
-    in_tif = args.base_dir / args.location_id / f"{args.location_id}_topo_40x40_mean.tif"
+    in_tif = args.base_dir / args.location_id / f"{args.location_id}_topo_60x60_mean.tif"
     if not in_tif.exists():
         print(f"ERROR: input not found: {in_tif}", file=sys.stderr)
         sys.exit(1)
