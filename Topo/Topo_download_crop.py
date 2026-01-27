@@ -321,7 +321,7 @@ def main():
 
     lon_min, lat_min, lon_max, lat_max = bbox  # bbox = (W,S,E,N)
 
-    nx = ny = 40  #
+    nx = ny = 60  
 
     lon_edges = np.linspace(lon_min, lon_max, nx + 1)
     lat_edges = np.linspace(lat_min, lat_max, ny + 1)
