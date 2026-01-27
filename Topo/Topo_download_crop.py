@@ -40,6 +40,8 @@ from rasterio.windows import Window
 from rasterio.merge import merge
 from rasterio.transform import from_origin
 import math
+import torch
+
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent      # UM-EARTH/Topo
@@ -89,6 +91,16 @@ def polygon_to_bbox(polygon):
     lats = [p[1] for p in polygon]
     return (min(lons), min(lats), max(lons), max(lats))
 
+def save_tensors(tensor_map: dict[str, torch.Tensor], filename: str):
+    class TensorModule(torch.nn.Module):
+        def __init__(self, tensors):
+            super().__init__()
+            for name, tensor in tensors.items():
+                self.register_buffer(name, tensor)
+
+    module = TensorModule(tensor_map)
+    scripted = torch.jit.script(module)
+    scripted.save(filename)
 
 
 # 1.2 argparse：
@@ -118,6 +130,12 @@ def parse_args():
         type=Path,
         default=DEFAULT_OUT,
         help="Output directory (default: UM-EARTH/Topo/Data/Raw)"
+    
+    )
+    ap.add_argument(
+        "--save-pt",
+        action="store_true",
+        help="Also save coarse-mean topography as TorchScript (.pt)"
     )
     return ap.parse_args()
 
@@ -354,7 +372,7 @@ def main():
                     cell_mean[j, i] = float(data.mean())
 
     # Write GeoTIFF (north-up expects first row = north), so flip vertically
-    cell_mean_northup = np.flipud(cell_mean)
+    cell_mean_northup = np.flipud(cell_mean).copy()
 
     dx = (lon_max - lon_min) / nx
     dy = (lat_max - lat_min) / ny
@@ -385,6 +403,23 @@ def main():
     print("Saved coarse-mean GeoTIFF:", out_tif.resolve())
     print("dx, dy (deg):", dx, dy)
     print(f"{nx}x{ny} (south->north indexing) array:\n", cell_mean)
+    
+    # 5 Save coarse-mean as TorchScript .pt for model ingestion
+    if args.save_pt:
+        topo_tensor = torch.from_numpy(cell_mean_northup).unsqueeze(0).contiguous()  # (1, H, W)
+
+        tensor_map = {
+            "topography": topo_tensor,
+            "lat_bounds": torch.tensor([lat_min, lat_max], dtype=torch.float32),
+            "lon_bounds": torch.tensor([lon_min, lon_max], dtype=torch.float32),
+        }
+
+        out_pt = save_dir / f"{args.location_id}_topo_{nx}x{ny}_mean.pt"
+        print("Writing TorchScript:", out_pt.resolve())
+        save_tensors(tensor_map, str(out_pt))
+
+        print("Saved:", out_pt.resolve())
+        print("topography shape:", tuple(topo_tensor.shape), "dtype:", topo_tensor.dtype)
 
 if __name__ == "__main__":
     main()
