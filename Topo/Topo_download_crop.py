@@ -260,7 +260,7 @@ def main():
 
         # Sanity check: southern boundary coverage
         with rasterio.open(fp) as src:
-            src_b = src.bounds   # 原始 tile 的 bounds
+            src_b = src.bounds   
 
         with rasterio.open(clip_fp) as chk:
             b = chk.bounds

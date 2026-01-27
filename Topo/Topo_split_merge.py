@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Refine a merged DEM by an arbitrary integer factor Nx using interpolation,
 # and save ONLY as TorchScript (.pt). 
-
+# Assumes the merged DEM is already downloaded and cropped.
 # Usage:
 #     python Topo_split_merge.py ws-site1 2x
 #     python Topo_split_merge.py ws-site1 4x
