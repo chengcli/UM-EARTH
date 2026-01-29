@@ -332,7 +332,7 @@ def main():
         topo = interpolate_to_shape(topo, target_nlat, target_nlon, method=args.method)
 
     # save TorchScript tensors
-    topo_tensor = torch.from_numpy(topo.data).unsqueeze(0)  # (1, H, W)
+    topo_tensor = torch.from_numpy(topo.data)
     tensor_map = {
         "topography": topo_tensor.contiguous(),
         "lat_bounds": torch.tensor(topo.lat_bounds, dtype=torch.float32),
