@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Refine a merged DEM by an arbitrary integer factor Nx using interpolation ,
+# Refine a merged DEM by an arbitrary integer factor Nx using interpolation,
 # and save ONLY as TorchScript (.pt). 
-
+# Assumes the merged DEM is already downloaded and cropped.
 # Usage:
 #     python Topo_split_merge.py ws-site1 2x
 #     python Topo_split_merge.py ws-site1 4x
@@ -33,6 +33,15 @@ import numpy as np
 import rasterio
 from scipy.interpolate import RegularGridInterpolator
 import torch
+
+# Path anchors (GitHub-safe)
+SCRIPT_DIR = Path(__file__).resolve().parent      # e.g., UM-EARTH/Topo
+PROJECT_ROOT = SCRIPT_DIR.parent                  # e.g., UM-EARTH 
+
+DEFAULT_LOCATIONS = PROJECT_ROOT / "locations.csv"
+DEFAULT_BASE_DIR  = PROJECT_ROOT / "Topo" / "Data" / "Raw"
+DEFAULT_OUT_DIR   = PROJECT_ROOT / "Topo" / "Data" / "Split"
+
 
 # TorchScript tensor saver (your preferred format)
 def save_tensors(tensor_map: dict[str, torch.Tensor], filename: str):
@@ -67,10 +76,10 @@ class TopographyData:
 
 # locations.csv -> bounds
 def read_bounds_from_locations(locations_csv: Path, location_id: str):
-    """
-    Read (lat_bounds, lon_bounds) for a location_id from locations.csv.
-    Skips comment lines starting with '#'.
-    """
+
+    # Read (lat_bounds, lon_bounds) for a location_id from locations.csv.
+    # Skips comment lines starting with '#'.
+  
     if not locations_csv.exists():
         raise FileNotFoundError(locations_csv)
 
@@ -176,29 +185,34 @@ def estimate_bytes_float32(nlat: int, nlon: int) -> int:
 
 # CLI
 def parse_args():
-    ap = argparse.ArgumentParser(description="Refine merged DEM by arbitrary Nx and save as TorchScript (.pt).")
+    ap = argparse.ArgumentParser(
+        description="Refine merged DEM by power-of-two factor and save as TorchScript (.pt)."
+    )
     ap.add_argument("location_id", help="e.g. ws-site1")
-    ap.add_argument("factor", help="Nx like 2x, 3x, 10x (N>=2)")
+    ap.add_argument(
+        "factor",
+        help="Refinement factor (power of two), e.g. 2x, 4x, 8x (N >= 2)"
+    )
 
     ap.add_argument(
-        "--locations",
+         "--locations",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/locations.csv"),
-        help="Path to locations.csv"
+        default=DEFAULT_LOCATIONS,
+        help="Path to locations.csv (default: UM-EARTH/locations.csv)"
     )
 
     ap.add_argument(
         "--base-dir",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/Topo/Data/Raw"),
-        help="Directory containing <location>/<location>_merged_10m.tif"
+        default=DEFAULT_BASE_DIR,
+        help="Directory containing <location>/<location>_merged_10m.tif (default: UM-EARTH/Topo/Data/Raw)"
     )
 
     ap.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/Topo/Data/Split"),
-        help="Output directory for TorchScript .pt"
+        default=DEFAULT_OUT_DIR,
+        help="Output directory for TorchScript .pt (default: UM-EARTH/Topo/Data/Split)"
     )
 
     ap.add_argument(
@@ -238,7 +252,7 @@ def main():
         sys.exit(1)
 
     # Input DEM (only read)
-    in_tif = args.base_dir / args.location_id / f"{args.location_id}_merged_10m.tif"
+    in_tif = args.base_dir / args.location_id / f"{args.location_id}_topo_60x60_mean.tif"
     if not in_tif.exists():
         print(f"ERROR: input not found: {in_tif}", file=sys.stderr)
         sys.exit(1)
@@ -277,7 +291,7 @@ def main():
             lon_bounds=topo.lon_bounds,
             nlat=n,
             nlon=n,
-         )
+        )
 
         print("Test topo shape:", topo.data.shape)
 
@@ -318,7 +332,7 @@ def main():
         topo = interpolate_to_shape(topo, target_nlat, target_nlon, method=args.method)
 
     # save TorchScript tensors
-    topo_tensor = torch.from_numpy(topo.data).unsqueeze(0)  # (1, H, W)
+    topo_tensor = torch.from_numpy(topo.data)
     tensor_map = {
         "topography": topo_tensor.contiguous(),
         "lat_bounds": torch.tensor(topo.lat_bounds, dtype=torch.float32),

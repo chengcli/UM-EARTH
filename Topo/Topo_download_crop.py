@@ -33,7 +33,21 @@ import sys, io, csv
 import argparse
 import subprocess
 import requests
+import numpy as np
+import rasterio
+from rasterio.windows import from_bounds
+from rasterio.windows import Window
+from rasterio.merge import merge
+from rasterio.transform import from_origin
+import math
+import torch
 
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent      # UM-EARTH/Topo
+PROJECT_ROOT = SCRIPT_DIR.parent                 # UM-EARTH
+DEFAULT_LOCATIONS = PROJECT_ROOT / "locations.csv"
+DEFAULT_OUT = PROJECT_ROOT / "Topo" / "Data" / "Raw"
 
 # 1.1 read locations.csv
 def load_locations(locations_file):
@@ -77,6 +91,16 @@ def polygon_to_bbox(polygon):
     lats = [p[1] for p in polygon]
     return (min(lons), min(lats), max(lons), max(lats))
 
+def save_tensors(tensor_map: dict[str, torch.Tensor], filename: str):
+    class TensorModule(torch.nn.Module):
+        def __init__(self, tensors):
+            super().__init__()
+            for name, tensor in tensors.items():
+                self.register_buffer(name, tensor)
+
+    module = TensorModule(tensor_map)
+    scripted = torch.jit.script(module)
+    scripted.save(filename)
 
 
 # 1.2 argparse：
@@ -90,10 +114,10 @@ def parse_args():
         help="Location ID in locations.csv (e.g., ws-site1)"
     )
     ap.add_argument(
-        "--locations",
+       "--locations",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/locations.csv"),
-        help="Path to locations.csv"
+        default=DEFAULT_LOCATIONS,
+        help="Path to locations.csv (default: UM-EARTH/locations.csv)"
     )
     ap.add_argument(
     "--skip-download",
@@ -102,11 +126,13 @@ def parse_args():
     )
 
     ap.add_argument(
-        "--out",
+         "--out",
         type=Path,
-        default=Path("/home/xinyuewa/Research/Weather_model/UM-EARTH/Topo/Data/Raw/"),
-        help="Output directory"
+        default=DEFAULT_OUT,
+        help="Output directory (default: UM-EARTH/Topo/Data/Raw)"
+    
     )
+
     return ap.parse_args()
 
 
@@ -199,110 +225,202 @@ def main():
 
     print("\nClipping tiles to bbox window...")
 
-    # Search recursively for GeoTIFF files (in case of subdirectories)
-    raw_tifs = sorted(list(save_dir.rglob("*.tif")) + list(save_dir.rglob("*.tiff")))
-    if not raw_tifs:
-        print(f"No tif files found in {save_dir}")
-        sys.exit(1)
+    # Search recursively for GeoTIFF files (in case of subdirectories) 
 
-    clipped_tifs = []
+    clipped_tifs = sorted(save_dir.glob("clip_*.tif"))
 
-    for fp in raw_tifs:
-        clip_fp = save_dir / f"clip_{fp.name}"
+    if clipped_tifs:
+        print(f"[SKIP] Found {len(clipped_tifs)} existing clipped tiles. Reusing them.")
+    else:
+        print("[RUN] No clipped tiles found. Performing clipping...")
 
-        with rasterio.open(fp) as src:
-            # 1) bbox -> float window
-            win0 = from_bounds(*bbox, transform=src.transform)
+        # Search recursively for raw GeoTIFF files
+        raw_tifs = sorted(list(save_dir.rglob("*.tif")) + list(save_dir.rglob("*.tiff")))
+        if not raw_tifs:
+            print(f"No tif files found in {save_dir}")
+            sys.exit(1)
 
-            # Expand window outward to guarantee full coverage
-            win = Window(
-                col_off=math.floor(win0.col_off),
-                row_off=math.floor(win0.row_off),
-                width=math.ceil(win0.width),
-                height=math.ceil(win0.height),
-            )
+        clipped_tifs = []
 
-            # Clamp window to image bounds
-            from rasterio.errors import WindowError
+        for fp in raw_tifs:
+            if fp.name.startswith("clip_"):
+                continue  # 防止重复 clip clip_*.tif
 
-            try:
-                win = win.intersection(Window(0, 0, src.width, src.height))
-            except WindowError:
-                print(f"  skip (no overlap after clamp): {fp.name}")
-                continue
+            clip_fp = save_dir / f"clip_{fp.name}"
 
-            if win.width <= 0 or win.height <= 0:
-                print(f"  skip (no overlap): {fp.name}")
-                continue
+            with rasterio.open(fp) as src:
+                win0 = from_bounds(*bbox, transform=src.transform)
 
-            data = src.read(1, window=win)
-            if data.size == 0:
-                print(f"  skip (empty): {fp.name}")
-                continue
+                win = Window(
+                    col_off=math.floor(win0.col_off),
+                    row_off=math.floor(win0.row_off),
+                    width=math.ceil(win0.width),
+                    height=math.ceil(win0.height),
+                )
 
-            new_transform = rasterio.windows.transform(win, src.transform)
+                from rasterio.errors import WindowError
+                try:
+                    win = win.intersection(Window(0, 0, src.width, src.height))
+                except WindowError:
+                    print(f"  skip (no overlap): {fp.name}")
+                    continue
 
-            profile = src.profile.copy()
-            profile.update(
-                height=data.shape[0],
-                width=data.shape[1],
-                transform=new_transform,
-                count=1,
-            )
+                if win.width <= 0 or win.height <= 0:
+                    continue
 
-        # Write clipped tile
-        with rasterio.open(clip_fp, "w", **profile) as dst:
-            dst.write(data, 1)
+                data = src.read(1, window=win)
+                if data.size == 0:
+                    continue
 
-        # Sanity check: southern boundary coverage
-        with rasterio.open(fp) as src:
-            src_b = src.bounds   # 原始 tile 的 bounds
+                new_transform = rasterio.windows.transform(win, src.transform)
 
-        with rasterio.open(clip_fp) as chk:
-            b = chk.bounds
+                profile = src.profile.copy()
+                profile.update(
+                    height=data.shape[0],
+                    width=data.shape[1],
+                    transform=new_transform,
+                    count=1,
+                )
 
-            # src_b.bottom <= bbox[1] <= src_b.top
-            if (src_b.bottom <= bbox[1] <= src_b.top):
-                if b.bottom > bbox[1] + 1e-6:
-                    raise RuntimeError(
-                        f"Clip south bound {b.bottom} is north of requested {bbox[1]} "
-                        f"for {clip_fp.name}"
-                    )       
+            with rasterio.open(clip_fp, "w", **profile) as dst:
+                dst.write(data, 1)
 
-
-        clipped_tifs.append(clip_fp)
-        print(f"  clipped: {clip_fp.name}")
+            clipped_tifs.append(clip_fp)
+            print(f"  clipped: {clip_fp.name}")
 
         if not clipped_tifs:
             print("No clipped tiles were produced.")
             sys.exit(1)
 
-        print(f"Clipped {len(clipped_tifs)} tile(s).")
 
+
+    # 3 Merge all clipped tiles into a single GeoTIFF
 
     # 3) Merge all clipped tiles into a single GeoTIFF
-
-    print("\nMerging clipped tiles...")
-
-    datasets = [rasterio.open(str(p)) for p in clipped_tifs]
-    mosaic, out_transform = merge(datasets)
-
-    out_profile = datasets[0].profile.copy()
-    out_profile.update(
-        height=mosaic.shape[1],
-        width=mosaic.shape[2],
-        transform=out_transform,
-    )
-
-    for ds in datasets:
-        ds.close()
-
     merged_fp = save_dir / f"{args.location_id}_merged_10m.tif"
-    with rasterio.open(merged_fp, "w", **out_profile) as dst:
-        dst.write(mosaic)
 
-    print("\nDONE.")
-    print("Merged DEM:", merged_fp.resolve())
+    if merged_fp.exists():
+        print("\n[SKIP] Merged DEM already exists. Reusing:", merged_fp.resolve())
+    else:
+        print("\nMerging clipped tiles...")
+
+        if not clipped_tifs:
+            print("ERROR: No clipped tiles found for merging.", file=sys.stderr)
+            sys.exit(1)
+
+        datasets = [rasterio.open(str(p)) for p in clipped_tifs]
+        mosaic, out_transform = merge(datasets)
+
+        out_profile = datasets[0].profile.copy()
+        out_profile.update(
+            height=mosaic.shape[1],
+            width=mosaic.shape[2],
+            transform=out_transform,
+            count=1,
+        )
+
+        for ds in datasets:
+            ds.close()
+
+        with rasterio.open(merged_fp, "w", **out_profile) as dst:
+            dst.write(mosaic)
+
+        print("\nDONE.")
+        print("Merged DEM:", merged_fp.resolve())
+
+        
+    # 4 Coarsen merged DEM to an NxN lat/lon grid by computing cell mean
+    print("\nComputing coarse-grid cell mean from merged DEM...")
+
+    lon_min, lat_min, lon_max, lat_max = bbox  # bbox = (W,S,E,N)
+
+    nx = ny = 60
+    out_tif = save_dir / f"{args.location_id}_topo_{nx}x{ny}_mean.tif"
+
+    if out_tif.exists():
+        print("[SKIP] Coarse-mean DEM already exists:")
+        print("       ", out_tif.resolve())
+
+        with rasterio.open(out_tif) as ds:
+            cell_mean_northup = ds.read(1).astype(np.float32)
+            crs = ds.crs
+    else:
+        print("\nComputing coarse-grid cell mean from merged DEM...")
+
+        lon_min, lat_min, lon_max, lat_max = bbox
+
+        lon_edges = np.linspace(lon_min, lon_max, nx + 1)
+        lat_edges = np.linspace(lat_min, lat_max, ny + 1)
+
+        cell_mean = np.full((ny, nx), np.nan, dtype=np.float32)
+
+        with rasterio.open(merged_fp) as ds:
+            crs = ds.crs
+
+            for j in range(ny):      # south -> north
+                for i in range(nx):
+                    w, e = lon_edges[i], lon_edges[i + 1]
+                    s, n = lat_edges[j], lat_edges[j + 1]
+
+                    win = from_bounds(w, s, e, n, ds.transform)
+                    try:
+                        win = win.intersection(Window(0, 0, ds.width, ds.height))
+                    except Exception:
+                        continue
+
+                    if win.width <= 0 or win.height <= 0:
+                        continue
+
+                    data = ds.read(1, window=win, masked=True)
+                    if data.size > 0 and not np.all(data.mask):
+                        cell_mean[j, i] = float(data.mean())
+
+        # north-up
+        cell_mean_northup = np.flipud(cell_mean).copy()
+
+        dx = (lon_max - lon_min) / nx
+        dy = (lat_max - lat_min) / ny
+        transform = from_origin(lon_min, lat_max, dx, dy)
+
+        profile2 = {
+            "driver": "GTiff",
+            "height": ny,
+            "width": nx,
+            "count": 1,
+            "dtype": "float32",
+            "crs": crs,
+            "transform": transform,
+            "nodata": -9999.0,
+        }
+
+        to_write = np.where(
+            np.isfinite(cell_mean_northup),
+            cell_mean_northup,
+            profile2["nodata"]
+        ).astype(np.float32)
+
+        with rasterio.open(out_tif, "w", **profile2) as dst:
+            dst.write(to_write, 1)
+
+        print("Saved coarse-mean GeoTIFF:", out_tif.resolve())
+
     
+    # 5 Save coarse-mean as TorchScript .pt for model ingestion
+    topo_tensor = torch.from_numpy(cell_mean_northup) # (latitude, longitude)
+
+    tensor_map = {
+        "topography": topo_tensor,
+        "lat_bounds": torch.tensor([lat_min, lat_max], dtype=torch.float32),
+        "lon_bounds": torch.tensor([lon_min, lon_max], dtype=torch.float32),
+    }
+
+    out_pt = save_dir / f"{args.location_id}_topo_{nx}x{ny}_mean.pt"
+    print("Writing TorchScript:", out_pt.resolve())
+    save_tensors(tensor_map, str(out_pt))
+
+    print("Saved:", out_pt.resolve())
+    print("topography shape:", tuple(topo_tensor.shape), "dtype:", topo_tensor.dtype)
+
+
 if __name__ == "__main__":
     main()
