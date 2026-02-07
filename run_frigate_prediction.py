@@ -57,7 +57,7 @@ def create_block(config_file: str):
 
     return block, thermo_x, kinet, device
 
-def load_ecmwf_input(input_file: str, index: int = 0,
+def load_ecmwf_input(input_dir: str, index: int = 0,
                      device: torch.device = torch.device("cpu")):
     module = torch.jit.load(input_file)
     block_vars = {}
@@ -246,14 +246,17 @@ def main():
         required=True, help="YAML configuration file."
     )
     parser.add_argument(
-        "-i", "--input", type=str, 
-        required=True, help="Initial input file.",
-        default=""
+        "-i", "--input_dir", type=str,
+        default='./input', help="input directory."
+    )
+    parser.add_argument(
+        "-o", "--output_dir", type=str,
+        default='./output', help="output directory."
     )
     args = parser.parse_args()
 
     block, thermo_x, kinet, device = create_block(args.config)
-    block_vars = load_ecmwf_input(args.input, index=0, device=device)
+    block_vars = load_ecmwf_input(args.input_dir, index=0, device=device)
     for key, data in block_vars.items():
         print(f"{key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
 
