@@ -11,4 +11,4 @@
 #python prepare_initial_condition.py ws-site1 --start-from 2
 
 ## STEP C: Run simulation pipeline for the site and date range
-python run_frigate_prediction.py -c ws-site1.yaml -i input.part
+python run_frigate_prediction.py -c ws-site1.yaml --input_dir input --output_dir output
