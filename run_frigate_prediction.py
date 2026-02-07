@@ -59,14 +59,28 @@ def create_block(config_file: str):
 
 def load_ecmwf_input(input_dir: str, index: int = 0,
                      device: torch.device = torch.device("cpu")):
-    module = torch.jit.load(input_file)
+    RESTART_FILE = f"{input_dir}/input.pt"
+    TOPO_FILES = [f"{input_dir}/ws-site1_topo_60x60_mean.pt",
+                  f"{input_dir}/ws-site1_refined_2x.pt",
+                  f"{input_dir}/ws-site1_refined_4x.pt",
+                  f"{input_dir}/ws-site1_refined_8x.pt"]
+
+    module = torch.jit.load(RESTART_FILE)
     block_vars = {}
     for name, data in module.named_buffers(recurse=True):
         block_vars[name] = data[index].to(device).to(torch.double)
 
     for name, data in module.named_parameters(recurse=True):
         block_vars[name] = data[index].to(device).to(torch.double)
-    return block_vars
+
+    aux_vars = {}
+    for topo_file in TOPO_FILES:
+        module = torch.jit.load(topo_file)
+        for name, data in module.named_buffers(recurse=True):
+            aux_vars[name] = data.to(device).to(torch.double)
+        for name, data in module.named_parameters(recurse=True):
+            aux_vars[name] = data.to(device).to(torch.double)
+    return block_vars, aux_vars
 
 def equilibrate_initial_fields(block: MeshBlock,
                                thermo_x: ThermoX,
@@ -256,9 +270,15 @@ def main():
     args = parser.parse_args()
 
     block, thermo_x, kinet, device = create_block(args.config)
-    block_vars = load_ecmwf_input(args.input_dir, index=0, device=device)
+    block_vars, aux_vars = load_ecmwf_input(args.input_dir, index=0, device=device)
+    print_ok("Block variables loaded from ECMWF input:")
     for key, data in block_vars.items():
-        print(f"{key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
+        print(f"- {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
+
+    print_ok("Auxiliary variables loaded from ECMWF input:")
+    for key, data in aux_vars.items():
+        print(f"- {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
+    exit()
 
     block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
     block_vars, current_time = block.initialize(block_vars)

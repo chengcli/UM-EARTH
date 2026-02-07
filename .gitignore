@@ -30,3 +30,6 @@ z.junk/*
 
 # sif file (singularity)
 *.sif
+
+# topo
+Topo/Data
