@@ -112,7 +112,7 @@ def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
     u[kIV3] -= rho * w[kIV3] * topo.int() * dt / tau
 
     # uniform cooling
-    u[IPR] -= rho * cv * cooling_rate * (1. - topo.int()) * dt
+    #u[IPR] -= rho * cv * cooling_rate * (1. - topo.int()) * dt
 
     # surface heating
     # surface_level = torch.zeros_like(topo)
@@ -218,7 +218,7 @@ def run_spinup(block: MeshBlock,
     for output in block.options.outputs():
         output.dt(3600.)
 
-    duration = 2160.  # seconds (6 hours)
+    duration = 21600.  # seconds (6 hours)
     for chunk in range(1, 4):
         start_clock = time.time()
         block_vars, current_time = run_simulation(block, thermo_x, kinet,

@@ -7,8 +7,8 @@
 #    --nx1 50 --nx2 60 --nx3 60
 
 ## STEP B: Generate initial conditions for the site and date range
-python prepare_initial_condition.py ws-site1
+#python prepare_initial_condition.py ws-site1
 #python prepare_initial_condition.py ws-site1 --start-from 2
 
 ## STEP C: Run simulation pipeline for the site and date range
-#python run_frigate_prediction.py -c ws-site1.yaml --input_dir input --output_dir output
+python run_frigate_prediction.py -c ws-site1.yaml --input_dir input --output_dir output

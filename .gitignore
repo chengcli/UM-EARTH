@@ -33,3 +33,10 @@ z.junk/*
 
 # topo
 Topo/Data
+
+# outputs
+*-????-??-??
+
+# slurm
+*.err
+*.out
