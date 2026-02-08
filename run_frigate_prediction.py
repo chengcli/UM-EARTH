@@ -96,6 +96,28 @@ def equilibrate_initial_fields(block: MeshBlock,
 
     return block_vars
 
+def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
+                        dt: float, 
+                        tau: float = 100.,
+                        cooling_rate: float = 2. / 86400.):
+    topo = block_vars["topo"]
+    w = block_vars["hydro_w"]
+    u = block_vars["hydro_u"]
+    rho = u[kIDN]
+    cv = 717.5
+
+    # boundary layer forcing
+    u[kIV1] -= rho * w[kIV1] * topo.int() * dt / tau
+    u[kIV2] -= rho * w[kIV2] * topo.int() * dt / tau
+    u[kIV3] -= rho * w[kIV3] * topo.int() * dt / tau
+
+    # uniform cooling
+    u[IPR] -= rho * cv * cooling_rate * (1. - topo.int()) * dt
+
+    # surface heating
+    # surface_level = torch.zeros_like(topo)
+    # surface_level[:,:,1:] = topo[:,:,:-1] - topo[:,:,1:]
+
 def run_simulation(block: MeshBlock, 
                    thermo_x: ThermoX,
                    kinet: Kinetics,
@@ -112,6 +134,7 @@ def run_simulation(block: MeshBlock,
 
         for stage in range(len(block.intg.stages)):
             block.forward(block_vars, dt, stage)
+            add_frigate_forcing(block_vars, dt)
 
         err = block.check_redo(block_vars)
         if err > 0:
@@ -150,7 +173,7 @@ def nudge_from_ecmwf(block: MeshBlock,
         hydro_u[..., nghost:-nghost, nghost:-nghost, :] = u_int_coarsened
 
     # read nudge data from ECMWF input
-    du = aux_vars[f"hydro_u{index}"] - hydro_u
+    du = aux_vars[f"hydro_u/{index}"] - hydro_u
 
     # upsample back to original resolution
     for n in range(min(index, 2)):
@@ -189,27 +212,28 @@ def run_spinup(block: MeshBlock,
                thermo_x: ThermoX,
                kinet: Kinetics,
                block_vars: dict[str, torch.Tensor],
-               nudge_vars: dict[str, torch.Tensor],
+               aux_vars: dict[str, torch.Tensor],
                current_time: float,
                config_file: str):
     for output in block.options.outputs():
         output.dt(3600.)
 
-    duration = 21600.  # seconds (6 hours)
+    duration = 2160.  # seconds (6 hours)
     for chunk in range(1, 4):
         start_clock = time.time()
         block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                                   block_vars, current_time, duration)
         if chunk < 3:
+            topo = aux_vars[f"topo/{chunk}"]
             block, thermo_x, kinet, block_vars = refine_simulation(
-                    block, block_vars, config_file)
+                    block, block_vars, topo, config_file)
         else:
             pass
             #for output in block.options.outputs():
             #    output.super_resolution(True)
 
         block_vars = nudge_from_ecmwf(block, thermo_x, kinet,
-                                      block_vars, nudge_vars, chunk)
+                                      block_vars, aux_vars, chunk)
         end_clock = time.time()
         print_ok("Completed chunk ", chunk, "/ 3 for the day.\n",
                  "Current time = ", current_time, " seconds.\n",
@@ -220,6 +244,7 @@ def run_spinup(block: MeshBlock,
 
 def refine_simulation(block: MeshBlock,
                       block_vars: dict[str, torch.Tensor],
+                      topo: torch.Tensor,
                       config_file: str):
     device = block_vars["hydro_u"].device
 
@@ -241,6 +266,13 @@ def refine_simulation(block: MeshBlock,
     # refine variables
     nghost = block.options.coord().nghost()
     block_vars["hydro_u"] = conservative_refine(block_vars["hydro_u"], nghost)
+
+    # topography
+    coord = block.module("coord")
+    x3v, x2v, x1v = torch.meshgrid(
+        coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
+    )
+    block_vars["topo"] = x1v < topo
 
     # eos model
     eos = block.module("hydro.eos")
@@ -274,11 +306,15 @@ def main():
         print(f"  - {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
 
     # load and compute auxiliary variables
+    ng = 3
     eos = block.module("hydro.eos")
     for n in range(1, 4):
         bvar, avar = load_ecmwf_input(args.input_dir, index=n, device=device)
         aux_vars[f"hydro_u/{n}"] = eos.compute("W->U", (bvar["hydro_w"],))
-        aux_vars[f"topo/{n}"] = avar["topography"]
+        topo = avar["topography"].unsqueeze(0).unsqueeze(0)
+        topo = F.pad(topo, pad=(ng, ng, ng, ng), mode="replicate")
+        topo = topo.squeeze(0).squeeze(0).unsqueeze(-1)
+        aux_vars[f"topo/{n}"] = topo
 
     print_ok("Auxiliary variables loaded from ECMWF input:")
     for key, data in aux_vars.items():
@@ -290,15 +326,15 @@ def main():
     x3v, x2v, x1v = torch.meshgrid(
         coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
     )
-    ng = 3
     topo = aux_vars["topography"].unsqueeze(0).unsqueeze(0)
     topo = F.pad(topo, pad=(ng, ng, ng, ng), mode="replicate")
     topo = topo.squeeze(0).squeeze(0).unsqueeze(-1)
-    block_vars["solid"] = x1v < topo
+    block_vars["topo"] = x1v < topo
     del aux_vars["topography"]
     block_vars, current_time = block.initialize(block_vars)
 
     ### Step 1: Run hydrostatic adjustment for 600 seconds ###
+    print(block_vars.keys())
     start_clock = time.time()
 
     block.options.hydro().disable_flux_x2(True)
@@ -317,8 +353,6 @@ def main():
           "Current time = ", current_time, " seconds.\n",
           "Current cycle = ", block.cycle(), ".\n",
           "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-
-    exit()
 
     ### Step 2: Run Spin-up for 1 day with increasing resolution ###
     start_clock = end_clock
