@@ -344,8 +344,7 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
         if num_threads == 1:
             # Serial execution (original behavior)
             for script_name, input_files, output_file, tidx, skip, topo_dir, location, plot_type in plot_tasks:
-                if num_threads == 1:
-                    print(f"    - Generating {plot_type} plot...")
+                print(f"    - Generating {plot_type} plot...")
                 success, out_file = generate_plot(script_name, input_files, output_file, tidx, skip, topo_dir, location, thread_lock)
                 if success:
                     plots_for_time.append(out_file)
