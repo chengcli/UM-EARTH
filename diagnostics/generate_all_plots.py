@@ -108,13 +108,13 @@ def combine_plots_to_pdf(plot_groups, output_pdf):
     output_pdf : str
         Output PDF file path
     """
-    with PdfPages(output_pdf) as pdf:
+    with PdfPages(output_pdf, metadata={'Title': 'Diagnostic Plots'}) as pdf:
         for section_name, plot_files in plot_groups:
             # Add a bookmark/outline for this section
             if plot_files:
                 print(f"  Adding section: {section_name}")
                 
-                for plot_file in plot_files:
+                for idx, plot_file in enumerate(plot_files):
                     if os.path.exists(plot_file):
                         try:
                             # Load image
@@ -128,17 +128,12 @@ def combine_plots_to_pdf(plot_groups, output_pdf):
                             
                             # Add title with filename
                             filename = os.path.basename(plot_file)
-                            fig.suptitle(filename, fontsize=10, y=0.98)
+                            fig.suptitle(f"{section_name} - {filename}", fontsize=10, y=0.98)
                             
                             plt.tight_layout()
                             
-                            # Save to PDF - first plot in section creates bookmark
-                            if plot_file == plot_files[0]:
-                                pdf.savefig(fig, dpi=150, bbox_inches='tight')
-                                # Attach bookmark metadata
-                                pdf.attach_note(section_name)
-                            else:
-                                pdf.savefig(fig, dpi=150, bbox_inches='tight')
+                            # Save to PDF
+                            pdf.savefig(fig, dpi=150, bbox_inches='tight')
                             
                             plt.close(fig)
                             
