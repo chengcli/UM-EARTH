@@ -342,9 +342,6 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
     print()
     print(f"PDF created: {output_pdf}")
     
-    print()
-    print(f"PDF created: {output_pdf}")
-    
     # Cleanup individual PNG files if requested
     if cleanup:
         print()
