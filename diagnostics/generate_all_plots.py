@@ -84,10 +84,13 @@ def generate_plot(script_name, input_files, output_file, time_index=0, skip=2, t
         cmd.extend(["--location", location])
     
     try:
-        # Run without capturing output so progress is visible
-        result = subprocess.run(cmd, timeout=120)
+        # Run with stdout visible but capture stderr for error messages
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=120)
         if result.returncode != 0:
+            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
             print(f"  Warning: {script_name} failed with return code {result.returncode}")
+            if error_msg:
+                print(f"           Error: {error_msg}")
             return False
         return True
     except subprocess.TimeoutExpired:
@@ -209,15 +212,20 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
     print(f"Processing NetCDF files in: {input_dir}")
     print(f"Output directory: {output_dir}")
     print(f"Output PDF: {output_pdf}")
-    if topo_dir:
+    
+    # Validate topography parameters
+    if topo_dir and not location:
         print(f"Topography directory: {topo_dir}")
-        if not location:
-            print("WARNING: --topo-dir provided without --location. Topography will NOT be overlaid.")
-            print("         Use --location <prefix> to specify the location prefix (e.g., ws-site1)")
-    if location:
+        print("WARNING: --topo-dir provided without --location. Topography will NOT be overlaid.")
+        print("         Use --location <prefix> to specify the location prefix (e.g., ws-site1)")
+    elif location and not topo_dir:
         print(f"Location prefix: {location}")
-        if not topo_dir:
-            print("WARNING: --location provided without --topo-dir. Topography will NOT be overlaid.")
+        print("WARNING: --location provided without --topo-dir. Topography will NOT be overlaid.")
+        print("         Use --topo-dir <directory> to specify the topography directory")
+    elif topo_dir and location:
+        print(f"Topography directory: {topo_dir}")
+        print(f"Location prefix: {location}")
+    
     print()
     
     # Find NetCDF files
