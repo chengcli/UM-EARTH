@@ -117,8 +117,8 @@ def plot_horizontal_velocity(input_file, output_file=None, time_index=0, skip=2,
                                    colors='brown', linewidths=0.8, alpha=0.6, linestyles='solid')
             ax.clabel(topo_lines, inline=True, fontsize=6, fmt='%.1f km')
         
-        # Add colorbar for magnitude
-        cbar = plt.colorbar(contour, ax=ax, label='Velocity Magnitude (m/s)')
+        # Add colorbar for magnitude (smaller for multi-panel plots)
+        cbar = plt.colorbar(contour, ax=ax, label='Velocity Magnitude (m/s)', shrink=0.8)
         
         # Labels and title
         ax.set_xlabel('X-coordinate (km)')

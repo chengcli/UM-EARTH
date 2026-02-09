@@ -99,15 +99,19 @@ def find_matching_topography(netcdf_shape, topo_dir, location_prefix):
     # _3.pt: 480x480
     
     if topo_dir is None or not os.path.exists(topo_dir):
+        if topo_dir is not None:
+            print(f"Warning: Topography directory not found: {topo_dir}")
         return None
     
     # Try to match the resolution
     x3_size, x2_size = netcdf_shape
     
     # Check for matching files
+    found_files = []
     for level in range(4):
         topo_file = os.path.join(topo_dir, f"{location_prefix}_{level}.pt")
         if os.path.exists(topo_file):
+            found_files.append(topo_file)
             try:
                 topo_data = load_topography(topo_file)
                 topo_shape = topo_data['shape']
@@ -115,11 +119,16 @@ def find_matching_topography(netcdf_shape, topo_dir, location_prefix):
                 # Check if dimensions match (allowing for transpose)
                 if (topo_shape[0] == x3_size and topo_shape[1] == x2_size) or \
                    (topo_shape[0] == x2_size and topo_shape[1] == x3_size):
+                    print(f"Using topography file: {topo_file} (shape: {topo_shape})")
                     return topo_file
             except Exception as e:
                 print(f"Warning: Could not load {topo_file}: {e}")
                 continue
     
+    if found_files:
+        print(f"Warning: Found topography files {found_files}, but none match NetCDF shape ({x3_size}, {x2_size})")
+    else:
+        print(f"Warning: No topography files found matching pattern: {os.path.join(topo_dir, location_prefix)}_*.pt")
     return None
 
 

@@ -128,8 +128,8 @@ def plot_theta_v(input_file, output_file=None, time_index=0, topo_dir=None, loca
                                    colors='brown', linewidths=0.8, alpha=0.6, linestyles='solid')
             ax.clabel(topo_lines, inline=True, fontsize=6, fmt='%.1f km')
         
-        # Add colorbar
-        cbar = plt.colorbar(contour, ax=ax, label='Virtual Potential Temperature (K)')
+        # Add colorbar (smaller for multi-panel plots)
+        cbar = plt.colorbar(contour, ax=ax, label='Virtual Potential Temperature (K)', shrink=0.8)
         
         # Labels and title
         ax.set_xlabel('X-coordinate (km)')
