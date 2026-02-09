@@ -369,7 +369,8 @@ def main():
 
     ### Step 3: Run prediction for the next 32 hours ###
     start_clock = end_clock
-    duration = 32 * 3600.  # seconds 
+    #duration = 32 * 3600.  # seconds 
+    duration = 7 * 86400.  # seconds 
     block_vars, current_time = run_simulation(block, thermo_x, kinet,
                                               block_vars, current_time, duration)
 
