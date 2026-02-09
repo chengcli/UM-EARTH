@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+#SBATCH -J frigate                  # job name
+#SBATCH -A nrenno1                  # account
+#SBATCH -p gpu_mig40                # partition
+#SBATCH -N 1                        # number of nodes
+#SBATCH --mem=32G                   # request memory
+#SBATCH --ntasks-per-node=1         # tasks per node (ideally = GPUs per node)
+#SBATCH --gpus-per-node=1           # GPUs per node
+#SBATCH --cpus-per-task=4           # CPU cores per task (data loading, etc.)
+#SBATCH -t 24:00:00                 # wall time
+#SBATCH -o %x-%j.out
+#SBATCH -e %x-%j.err
+
+# Activate virtual enrionment
+source $HOME/pyenv/bin/activate
+
+# Pick the master address from the first node
+#MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n1)
+#export MASTER_ADDR
+
+# generate a random port number between 29500-29600
+#export MASTER_PORT=$((29500 + RANDOM % 100))
+
+# launch parameters
+#echo "MASTER_ADDR=$MASTER_ADDR"
+#echo "MASTER_PORT=$MASTER_PORT"
+#echo "NNODES=${SLURM_NNODES}"
+#echo "NPROC_PER_NODE=${SLURM_NTASKS_PER_NODE}"
+
+# experiment configure
+EXP_NAME=2026-02-08
+EXE_NAME=run_frigate_prediction.py
+INP_NAME=ws-site1.yaml
+INPUT_DIR=${PWD}/input
+OUTPUT_DIR=${PWD}/output
+CONFIG_NAME=${INP_NAME%.yaml}-${EXP_NAME}.yaml
+
+# create an experiment folder named ws-site1-${EXP_NAME}
+EXP_DIR=ws-site1-${EXP_NAME}
+mkdir -p ${EXP_DIR}
+
+# copy ${EXE_NAME} to the experiment folder
+cp ./${EXE_NAME} ${EXP_DIR}/.
+
+# copy ${INP_NAME} to the experiment folder
+# append ${EXP_NAME} to the ${INP_NAME} before the extension
+cp ./${INP_NAME} ${EXP_DIR}/${CONFIG_NAME}
+
+# change to the experiment folder
+cd ${EXP_DIR}
+
+# launch job
+# torchrun will set RANK/LOCAL_RANK/WORLD_SIZE automatically from env when used with SLURM + srun
+#python ${EXE_NAME} -i ${INP_EXP_NAME}
+python run_frigate_prediction.py -c ${CONFIG_NAME} --input_dir ${INPUT_DIR} --output_dir ${OUTPUT_DIR}
+
+# move %x-%j.out and %x-%j.err to the experiment folder
+mv ../${SLURM_JOB_NAME}-${SLURM_JOB_ID}.out ./
+mv ../${SLURM_JOB_NAME}-${SLURM_JOB_ID}.err ./

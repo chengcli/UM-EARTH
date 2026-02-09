@@ -3,11 +3,11 @@
 # This template is used to generate location-specific configuration files.
 # Placeholders (in {braces}) are replaced by the config generator script.
 #
-# Location: {location_name}
-# Description: {location_description}
-# Center coordinates: {center_latitude}°N, {center_longitude}°W/E
-# Domain: {x2_extent_km} km × {x3_extent_km} km horizontal, {x1_max_km} km vertical
-# Time window: {start_date} to {end_date}
+# Location: White Sands Site 1
+# Description: Location: White Sands Site 1
+# Center coordinates: 33.76°N, -106.61°W/E
+# Domain: 120.0 km × 120.0 km horizontal, 10.0 km vertical
+# Time window: 2025-11-03 to 2025-11-07
 
 reference-state:
   Tref: 0.
@@ -43,23 +43,23 @@ geometry:
   # x3 = X direction (east-west distance)
   bounds:
     x1min: 0.0             # Ground level (meters)
-    x1max: {x1_max}        # Vertical extent (top of domain)
+    x1max: 10000.0        # Vertical extent (top of domain)
     x2min: 0.0             # South edge (meters, including ghost)
-    x2max: {x2_extent}     # North-south extent (including ghost)
+    x2max: 120000.0     # North-south extent (including ghost)
     x3min: 0.0             # West edge (meters, including ghost)
-    x3max: {x3_extent}     # East-west extent (including ghost)
+    x3max: 120000.0     # East-west extent (including ghost)
   
   # Grid cell configuration
   # Total cells = interior cells + 2 × nghost in each direction
   cells:
-    nx1: {nx1}             # Interior cells in vertical direction
-    nx2: {nx2}             # Interior cells in north-south direction
-    nx3: {nx3}             # Interior cells in east-west direction
-    nghost: {nghost}       # Number of ghost cells on each side
+    nx1: 50             # Interior cells in vertical direction
+    nx2: 60             # Interior cells in north-south direction
+    nx3: 60             # Interior cells in east-west direction
+    nghost: 3       # Number of ghost cells on each side
   
   # Geographic center of the computational domain
-  center_latitude: {center_latitude}    # degrees north
-  center_longitude: {center_longitude}  # degrees (negative = west, positive = east)
+  center_latitude: 33.76    # degrees north
+  center_longitude: -106.61  # degrees (negative = west, positive = east)
 
 distribute:
   backend: nccl
@@ -106,16 +106,16 @@ boundary-condition:
 integration:
   # Integration parameters for atmospheric model
   # (Only start-date and end-date are used by the data fetching pipeline)
-  type: rk3                 # Time integration method
+  type: rk3                # Time integration method
   cfl: 0.9                  # CFL number for stability
-  implicit-scheme: 1        # Explicit time integration
-  nlim: -1                  # No step limit
-  tlim: {tlim}              # Simulation time (seconds)
-  ncycle_out: 10            # Diagnostic output frequency
+  implicit-scheme: 1       # Explicit time integration
+  nlim: -1                 # No step limit
+  tlim: 86400               # Simulation time (seconds)
+  ncycle_out: 10           # Diagnostic output frequency
   
   # Date for fetching ERA5 data (YYYY-MM-DD format)
-  start-date: {start_date}
-  end-date: {end_date}
+  start-date: 2025-11-03
+  end-date: 2025-11-07
 
 outputs:
   - type: restart
@@ -135,11 +135,11 @@ forcing:
 
   top-sponge-lyr:
     tau: 1.e4
-    width: 200.
+    width: 100.
 
   #bot-sponge-lyr:
-  #  tau: 1.e5
-  #  width: 200.
+  #tau: 1.e5
+  #  width: 100.
 
 sedimentation:
   radius:

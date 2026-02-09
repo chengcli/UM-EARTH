@@ -35,7 +35,13 @@ def load_topography(topo_file):
         raise FileNotFoundError(f"Topography file not found: {topo_file}")
     
     # Load the PyTorch file
-    data = torch.load(topo_file, map_location='cpu')
+    module = torch.jit.load(topo_file)
+    data = {}
+    for name, var in module.named_buffers(recurse=True):
+        data[name] = var
+
+    for name, var in module.named_parameters(recurse=True):
+        data[name] = var
     
     # Extract topography data
     if isinstance(data, dict):

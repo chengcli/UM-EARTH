@@ -27,3 +27,16 @@ z.junk/*
 # generated plots
 *.pdf
 *.png
+
+# sif file (singularity)
+*.sif
+
+# topo
+Topo/Data
+
+# outputs
+*-????-??-??
+
+# slurm
+*.err
+*.out

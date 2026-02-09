@@ -77,7 +77,7 @@ def plot_surface_pressure(input_file, output_file=None, time_index=0, topo_dir=N
     if topo_contours:
         X2_topo, X3_topo, topo_elev_km = topo_contours
         topo_lines = ax.contour(X2_topo, X3_topo, topo_elev_km, levels=8,
-                               colors='brown', linewidths=1.0, alpha=0.6, linestyles='solid')
+                               colors='purple', linewidths=1.0, alpha=0.6, linestyles='solid')
         ax.clabel(topo_lines, inline=True, fontsize=7, fmt='%.1f km')
     
     # Add colorbar
