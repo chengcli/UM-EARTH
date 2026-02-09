@@ -18,6 +18,16 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 
+# Constants
+P0 = 101325.0  # Standard pressure in Pa
+KAPPA = 0.286  # R/cp for dry air (dimensionless)
+DEFAULT_RH = 0.7  # Default relative humidity (fraction)
+ESPY_CONSTANT = 125.0  # meters per degree Celsius in simplified LCL calculation
+PBL_THETA_THRESHOLD = 0.5  # K - potential temperature threshold for PBL detection
+MAGNUS_A = 17.27  # Magnus formula constant (dimensionless)
+MAGNUS_B = 237.7  # Magnus formula constant (degrees Celsius)
+
+
 def read_location_bounds(locations_csv, location_name):
     """
     Read location bounds from the locations.csv file.
@@ -134,6 +144,34 @@ def interpolate_2d(data, x2_idx, x3_idx, x2_frac, x3_frac):
     return v0 * (1 - x3_frac) + v1 * x3_frac
 
 
+def extract_and_interpolate(dataset, var_name, time, x1, x3_idx, x2_idx, x2_frac, x3_frac):
+    """
+    Extract a variable from a dataset and interpolate to a specific location.
+    
+    Parameters
+    ----------
+    dataset : xarray.Dataset
+        Dataset containing the variable
+    var_name : str
+        Name of the variable to extract
+    time : int
+        Time index
+    x1 : int
+        Vertical level index
+    x3_idx, x2_idx : int
+        Lower horizontal indices
+    x2_frac, x3_frac : float
+        Fractional positions for interpolation
+    
+    Returns
+    -------
+    float
+        Interpolated value at the specified location
+    """
+    data = dataset[var_name].isel(time=time, x1=x1).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
+    return interpolate_2d(data, 0, 0, x2_frac, x3_frac)
+
+
 def calculate_lcl(temperature, pressure, rh):
     """
     Calculate the Lift Condensation Level (LCL) height.
@@ -160,16 +198,12 @@ def calculate_lcl(temperature, pressure, rh):
     # Calculate dewpoint using Magnus formula
     rh_clipped = np.clip(rh, 0.01, 0.99)
     
-    # Magnus formula constants
-    a = 17.27
-    b = 237.7
-    
     # Calculate dewpoint
-    alpha = (a * T_c) / (b + T_c) + np.log(rh_clipped)
-    dewpoint = (b * alpha) / (a - alpha)
+    alpha = (MAGNUS_A * T_c) / (MAGNUS_B + T_c) + np.log(rh_clipped)
+    dewpoint = (MAGNUS_B * alpha) / (MAGNUS_A - alpha)
     
     # Calculate LCL height using simplified Espy's formula
-    lcl_height = 125.0 * (T_c - dewpoint)
+    lcl_height = ESPY_CONSTANT * (T_c - dewpoint)
     
     # Ensure non-negative heights
     lcl_height = np.maximum(lcl_height, 0.0)
@@ -199,8 +233,8 @@ def calculate_pbl_height(theta, x1):
     # Calculate differences between adjacent levels
     theta_diff = np.diff(theta)
     
-    # Find the first level where the difference exceeds 0.5 K
-    pbl_indices = np.where(theta_diff > 0.5)[0]
+    # Find the first level where the difference exceeds PBL_THETA_THRESHOLD
+    pbl_indices = np.where(theta_diff > PBL_THETA_THRESHOLD)[0]
     
     if len(pbl_indices) > 0:
         pbl_idx = pbl_indices[0]
@@ -271,17 +305,13 @@ def extract_time_series(input_file_out1, input_file_out2, lat, lon,
         # Data shape is (time, x1, x3, x2)
         
         # For surface variables
-        press_surface = ds1['press'].isel(time=t, x1=0).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
-        press_interp = interpolate_2d(press_surface, 0, 0, x2_frac, x3_frac)
-        
-        temp_surface = ds2['temp'].isel(time=t, x1=0).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
-        temp_interp = interpolate_2d(temp_surface, 0, 0, x2_frac, x3_frac)
+        press_interp = extract_and_interpolate(ds1, 'press', t, 0, x3_idx, x2_idx, x2_frac, x3_frac)
+        temp_interp = extract_and_interpolate(ds2, 'temp', t, 0, x3_idx, x2_idx, x2_frac, x3_frac)
         
         if 'rh_H2O_l_' in ds2.data_vars:
-            rh_surface = ds2['rh_H2O_l_'].isel(time=t, x1=0).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
-            rh_interp = interpolate_2d(rh_surface, 0, 0, x2_frac, x3_frac)
+            rh_interp = extract_and_interpolate(ds2, 'rh_H2O_l_', t, 0, x3_idx, x2_idx, x2_frac, x3_frac)
         else:
-            rh_interp = 0.7  # Default value
+            rh_interp = DEFAULT_RH
         
         # Calculate LCL
         lcl_series[t] = calculate_lcl(temp_interp, press_interp, rh_interp)
@@ -293,21 +323,15 @@ def extract_time_series(input_file_out1, input_file_out2, lat, lon,
         
         for k in range(nz):
             if 'theta_v' in ds2.data_vars:
-                theta_data = ds2['theta_v'].isel(time=t, x1=k).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
-                theta_profile[k] = interpolate_2d(theta_data, 0, 0, x2_frac, x3_frac)
+                theta_profile[k] = extract_and_interpolate(ds2, 'theta_v', t, k, x3_idx, x2_idx, x2_frac, x3_frac)
             else:
                 # If theta_v not available, calculate from temp and press
-                temp_data = ds2['temp'].isel(time=t, x1=k).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
-                press_data = ds1['press'].isel(time=t, x1=k).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
-                temp_k = interpolate_2d(temp_data, 0, 0, x2_frac, x3_frac)
-                press_k = interpolate_2d(press_data, 0, 0, x2_frac, x3_frac)
-                theta_profile[k] = temp_k * (101325.0 / press_k) ** 0.286
+                temp_k = extract_and_interpolate(ds2, 'temp', t, k, x3_idx, x2_idx, x2_frac, x3_frac)
+                press_k = extract_and_interpolate(ds1, 'press', t, k, x3_idx, x2_idx, x2_frac, x3_frac)
+                theta_profile[k] = temp_k * (P0 / press_k) ** KAPPA
             
-            vel2_data = ds1['vel2'].isel(time=t, x1=k).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
-            vel3_data = ds1['vel3'].isel(time=t, x1=k).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
-            
-            vel2_profile[k] = interpolate_2d(vel2_data, 0, 0, x2_frac, x3_frac)
-            vel3_profile[k] = interpolate_2d(vel3_data, 0, 0, x2_frac, x3_frac)
+            vel2_profile[k] = extract_and_interpolate(ds1, 'vel2', t, k, x3_idx, x2_idx, x2_frac, x3_frac)
+            vel3_profile[k] = extract_and_interpolate(ds1, 'vel3', t, k, x3_idx, x2_idx, x2_frac, x3_frac)
         
         # Calculate PBL height
         pbl_height = calculate_pbl_height(theta_profile, x1)
