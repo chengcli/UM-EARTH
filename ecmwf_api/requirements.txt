@@ -6,3 +6,4 @@ scipy
 PyYAML
 torch
 matplotlib
+Pillow

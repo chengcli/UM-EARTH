@@ -2,6 +2,43 @@
 
 This directory contains Python scripts for creating diagnostic plots from UM-EARTH model output files (NetCDF format).
 
+## Quick Start - Master Script
+
+To generate all diagnostic plots and combine them into a single PDF:
+
+```bash
+python generate_all_plots.py <directory_with_netcdf_files>
+```
+
+This will:
+1. Find all `out1*.nc` and `out2*.nc` files in the directory
+2. Generate all diagnostic plots for each file
+3. Combine all plots into a single PDF file (`diagnostic_plots.pdf`)
+
+### Examples
+
+```bash
+# Process all NetCDF files in a directory
+python generate_all_plots.py ws-site1-2026-02-08/
+
+# Specify output directory and PDF name
+python generate_all_plots.py ws-site1-2026-02-08/ -d output/ -p results.pdf
+
+# Process specific time index and keep PNG files
+python generate_all_plots.py ws-site1-2026-02-08/ -t 5 --no-cleanup
+
+# Adjust arrow density for velocity plots
+python generate_all_plots.py ws-site1-2026-02-08/ -s 3
+```
+
+### Master Script Options
+
+- `-d, --output-dir`: Output directory for plots (default: same as input)
+- `-p, --pdf`: Output PDF filename (default: diagnostic_plots.pdf)
+- `-t, --time`: Time index to plot (default: 0)
+- `-s, --skip`: Skip factor for velocity arrows (default: 2)
+- `--no-cleanup`: Keep individual PNG files after creating PDF
+
 ## Requirements
 
 Install the required Python packages:
@@ -14,6 +51,7 @@ Key dependencies:
 - `xarray` - for reading NetCDF files
 - `numpy` - for numerical operations
 - `matplotlib` - for plotting
+- `Pillow` (PIL) - for PDF generation
 
 ## Output File Format
 
