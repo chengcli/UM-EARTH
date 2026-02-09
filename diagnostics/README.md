@@ -2,6 +2,13 @@
 
 This directory contains Python scripts for creating diagnostic plots from UM-EARTH model output files (NetCDF format).
 
+## New Features
+
+- **Unit Conversions**: Plots now use km for spatial dimensions, cm/s for vertical velocity, m/s for horizontal velocity, and hours for time
+- **Topographic Contours**: Optional topography overlays from .pt files
+- **Equal Aspect Ratio**: Horizontal dimensions maintain equal aspect ratio
+- **PDF Bookmarks**: When processing multiple time steps, plots are grouped by hour with section bookmarks
+
 ## Quick Start - Master Script
 
 To generate all diagnostic plots and combine them into a single PDF:
@@ -18,8 +25,12 @@ This will:
 ### Examples
 
 ```bash
-# Process all NetCDF files in a directory
+# Process single time index (default: 0)
 python generate_all_plots.py ws-site1-2026-02-08/
+
+# Process all time indices with topography overlay
+python generate_all_plots.py ws-site1-2026-02-08/ --all-times \
+  --topo-dir Topo/Data/Split/ws-site1/ --location ws-site1
 
 # Specify output directory and PDF name
 python generate_all_plots.py ws-site1-2026-02-08/ -d output/ -p results.pdf
@@ -35,16 +46,39 @@ python generate_all_plots.py ws-site1-2026-02-08/ -s 3
 
 - `-d, --output-dir`: Output directory for plots (default: same as input)
 - `-p, --pdf`: Output PDF filename (default: diagnostic_plots.pdf)
-- `-t, --time`: Time index to plot (default: 0)
+- `-t, --time`: Time index to plot (default: 0). Ignored if --all-times is set.
 - `-s, --skip`: Skip factor for velocity arrows (default: 2)
 - `--no-cleanup`: Keep individual PNG files after creating PDF
+- `--topo-dir`: Directory containing topography .pt files (**required with --location**)
+- `--location`: Location prefix for topography files (e.g., ws-site1) (**required with --topo-dir**)
+- `--all-times`: Process all time indices and group by hour in PDF
+
+**Important**: Both `--topo-dir` and `--location` must be provided together to enable topography overlays. If only one is provided, a warning will be displayed and topography will not be overlaid.
+
+## Topography Files
+
+Topography files should be PyTorch tensors (.pt) with the following structure:
+
+```python
+{
+    'topography': torch.Tensor,  # 2D array of elevations in meters
+    'lat_bounds': torch.Tensor,  # [min_lat, max_lat]
+    'lon_bounds': torch.Tensor   # [min_lon, max_lon]
+}
+```
+
+The script will automatically match topography resolution to the NetCDF grid. Supported resolutions:
+- `<location>_0.pt`: 60x60
+- `<location>_1.pt`: 120x120
+- `<location>_2.pt`: 240x240
+- `<location>_3.pt`: 480x480
 
 ## Requirements
 
 Install the required Python packages:
 
 ```bash
-pip install -r ../ecmwf_api/requirements.txt
+pip install xarray numpy matplotlib pillow torch scipy netCDF4
 ```
 
 Key dependencies:
@@ -52,6 +86,7 @@ Key dependencies:
 - `numpy` - for numerical operations
 - `matplotlib` - for plotting
 - `Pillow` (PIL) - for PDF generation
+- `torch` - for loading topography data
 
 ## Output File Format
 
@@ -62,20 +97,24 @@ The scripts expect two types of NetCDF output files:
 
 ## Available Plotting Scripts
 
+All plotting scripts now support topography overlays and use improved units (km for spatial dimensions, cm/s for vertical velocity, m/s for horizontal velocity, hours for time).
+
 ### 1. Surface Pressure Map
 ```bash
-python plot_surface_pressure.py <out1.nc> -o surface_pressure.png
+python plot_surface_pressure.py <out1.nc> -o surface_pressure.png \
+  --topo-dir <topo_directory> --location <location_prefix>
 ```
 
-Creates a contour plot of surface pressure (lowest model level).
+Creates a contour plot of surface pressure (lowest model level) in hPa.
 
 ### 2. Vertical Velocity Maps
 ```bash
-python plot_vertical_velocity.py <out1.nc> -o vertical_velocity.png
+python plot_vertical_velocity.py <out1.nc> -o vertical_velocity.png \
+  --topo-dir <topo_directory> --location <location_prefix>
 ```
 
-Creates contour plots of mean vertical velocity at multiple heights:
-- Surface (0 m)
+Creates contour plots of vertical velocity (in cm/s) at multiple heights:
+- Surface (0 km)
 - 1.6 km
 - 2 km
 - 3 km
@@ -83,11 +122,12 @@ Creates contour plots of mean vertical velocity at multiple heights:
 
 ### 3. Horizontal Velocity Vector Maps
 ```bash
-python plot_horizontal_velocity.py <out1.nc> -o horizontal_velocity.png
+python plot_horizontal_velocity.py <out1.nc> -o horizontal_velocity.png \
+  --topo-dir <topo_directory> --location <location_prefix>
 ```
 
-Creates vector/quiver plots of horizontal velocity (vel2, vel3) at multiple heights:
-- Surface (0 m)
+Creates vector/quiver plots of horizontal velocity (in m/s) at multiple heights:
+- Surface (0 km)
 - 1.6 km
 - 2 km
 - 3 km
@@ -98,27 +138,30 @@ Optional arguments:
 
 ### 4. Water Path Maps
 ```bash
-python plot_water_paths.py <out2.nc> -o water_paths.png
+python plot_water_paths.py <out2.nc> -o water_paths.png \
+  --topo-dir <topo_directory> --location <location_prefix>
 ```
 
 Creates contour plots for:
-- Water cloud path (liquid water)
-- Water vapor path
+- Water cloud path (liquid water) in kg/m²
+- Water vapor path in kg/m²
 
 ### 5. Lift Condensation Level (LCL)
 ```bash
-python plot_lcl.py <out1.nc> <out2.nc> -o lcl.png
+python plot_lcl.py <out1.nc> <out2.nc> -o lcl.png \
+  --topo-dir <topo_directory> --location <location_prefix>
 ```
 
-Creates a contour plot of the Lift Condensation Level (LCL) calculated from surface temperature, pressure, and relative humidity.
+Creates a contour plot of the Lift Condensation Level (LCL) in km, calculated from surface temperature, pressure, and relative humidity.
 
 ### 6. Virtual Potential Temperature Maps
 ```bash
-python plot_theta_v.py <out2.nc> -o theta_v.png
+python plot_theta_v.py <out2.nc> -o theta_v.png \
+  --topo-dir <topo_directory> --location <location_prefix>
 ```
 
-Creates contour plots of virtual potential temperature at multiple heights:
-- Surface (0 m)
+Creates contour plots of virtual potential temperature (in K) at multiple heights:
+- Surface (0 km)
 - 1.6 km
 - 2 km
 - 3 km
@@ -130,29 +173,37 @@ All scripts support the following options:
 
 - `-o, --output`: Output file path (PNG format). If not specified, displays interactively.
 - `-t, --time`: Time index to plot (default: 0)
+- `--topo-dir`: Directory containing topography .pt files (optional)
+- `--location`: Location prefix for topography files (optional, e.g., ws-site1)
 
 ## Example Usage
 
-Generate all diagnostic plots for a simulation:
+Generate all diagnostic plots for a simulation with topography:
 
 ```bash
 # Surface pressure
-python plot_surface_pressure.py out1.nc -o surface_pressure.png
+python plot_surface_pressure.py out1.nc -o surface_pressure.png \
+  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
 
 # Vertical velocity at multiple levels
-python plot_vertical_velocity.py out1.nc -o vertical_velocity.png
+python plot_vertical_velocity.py out1.nc -o vertical_velocity.png \
+  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
 
 # Horizontal velocity vectors
-python plot_horizontal_velocity.py out1.nc -o horizontal_velocity.png -s 3
+python plot_horizontal_velocity.py out1.nc -o horizontal_velocity.png -s 3 \
+  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
 
 # Water paths
-python plot_water_paths.py out2.nc -o water_paths.png
+python plot_water_paths.py out2.nc -o water_paths.png \
+  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
 
 # Lift Condensation Level
-python plot_lcl.py out1.nc out2.nc -o lcl.png
+python plot_lcl.py out1.nc out2.nc -o lcl.png \
+  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
 
 # Virtual potential temperature
-python plot_theta_v.py out2.nc -o theta_v.png
+python plot_theta_v.py out2.nc -o theta_v.png \
+  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
 ```
 
 ## Output
@@ -165,7 +216,7 @@ The scripts expect the following data structure in the NetCDF files:
 
 **out1.nc variables:**
 - `press`: Pressure (Pa) - shape: (time, x1, x3, x2)
-- `vel1`: Vertical velocity (m/s) - shape: (time, x1, x3, x2)
+- `vel1`: Vertical velocity (m/s) - shape: (time, x1, x3, x2) - displayed as cm/s
 - `vel2`: Horizontal velocity component (m/s) - shape: (time, x1, x3, x2)
 - `vel3`: Horizontal velocity component (m/s) - shape: (time, x1, x3, x2)
 
@@ -177,10 +228,10 @@ The scripts expect the following data structure in the NetCDF files:
 - `path_H2O_l_`: Water cloud path (kg/m²) - shape: (time, x3, x2)
 
 **Coordinates:**
-- `time`: Time (s)
-- `x1`: Z-coordinate / height (m)
-- `x2`: X-coordinate (m)
-- `x3`: Y-coordinate (m)
+- `time`: Time (s) - displayed as hours
+- `x1`: Z-coordinate / height (m) - displayed as km
+- `x2`: X-coordinate (m) - displayed as km
+- `x3`: Y-coordinate (m) - displayed as km
 
 ## Notes
 
@@ -188,3 +239,6 @@ The scripts expect the following data structure in the NetCDF files:
 - All plots include contour lines with labels for easier reading
 - Colorbars are included to show the data range
 - Grid lines are added for reference
+- Topography contours (brown lines) are overlaid when topography files are provided
+- Equal aspect ratio is maintained for horizontal spatial dimensions
+- PDF output groups plots by hour when using --all-times option
