@@ -10,6 +10,7 @@ import argparse
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
+from topo_utils import load_topography, find_matching_topography, prepare_topography_for_plot
 
 
 def find_nearest_level(x1_coords, target_height):
@@ -32,7 +33,7 @@ def find_nearest_level(x1_coords, target_height):
     return idx
 
 
-def plot_theta_v(input_file, output_file=None, time_index=0):
+def plot_theta_v(input_file, output_file=None, time_index=0, topo_dir=None, location_prefix=None):
     """
     Create contour plots of virtual potential temperature at multiple heights.
     
@@ -44,6 +45,10 @@ def plot_theta_v(input_file, output_file=None, time_index=0):
         Path to save the output plot. If None, displays interactively.
     time_index : int, optional
         Time index to plot (default: 0)
+    topo_dir : str, optional
+        Directory containing topography .pt files
+    location_prefix : str, optional
+        Prefix for topography files (e.g., 'ws-site1')
     """
     # Load the dataset
     ds = xr.open_dataset(input_file)
@@ -51,22 +56,20 @@ def plot_theta_v(input_file, output_file=None, time_index=0):
     # Define target heights in meters
     target_heights = [0, 1600, 2000, 3000, 4000]  # surface, 1.6km, 2km, 3km, 4km
     
-    # Get coordinates
-    x1 = ds['x1'].values  # Z-coordinate (height)
-    x2 = ds['x2'].values  # X-coordinate
-    x3 = ds['x3'].values  # Y-coordinate
+    # Get coordinates (convert from meters to kilometers)
+    x1 = ds['x1'].values  # Z-coordinate (height) in meters
+    x2 = ds['x2'].values / 1000.0  # X-coordinate in km
+    x3 = ds['x3'].values / 1000.0  # Y-coordinate in km
     
     # Create meshgrid for plotting
     X2, X3 = np.meshgrid(x2, x3)
-    
-    # Create subplots - 2 rows, 3 columns
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    axes = axes.flatten()
     
     # Check if theta_v exists
     if 'theta_v' not in ds.data_vars:
         print("Warning: theta_v not found in dataset")
         # Create message in plot
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        axes = axes.flatten()
         for ax in axes:
             ax.text(0.5, 0.5, 'theta_v not found in dataset', 
                    ha='center', va='center', transform=ax.transAxes)
@@ -79,6 +82,26 @@ def plot_theta_v(input_file, output_file=None, time_index=0):
         plt.close()
         ds.close()
         return
+    
+    # Load topography if available
+    topo_contours = None
+    if topo_dir and location_prefix:
+        # Use the first data slice to get the shape
+        first_slice = ds['theta_v'].isel(time=time_index, x1=0)
+        netcdf_shape = first_slice.shape  # (x3, x2)
+        topo_file = find_matching_topography(netcdf_shape, topo_dir, location_prefix)
+        if topo_file:
+            try:
+                topo_data = load_topography(topo_file)
+                X2_topo, X3_topo, topo_elevation = prepare_topography_for_plot(topo_data, x2, x3)
+                # Convert elevation to km
+                topo_contours = (X2_topo, X3_topo, topo_elevation / 1000.0)
+            except Exception as e:
+                print(f"Warning: Could not load topography: {e}")
+    
+    # Create subplots - 2 rows, 3 columns
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    axes = axes.flatten()
     
     for i, target_h in enumerate(target_heights):
         # Find nearest level
@@ -98,13 +121,23 @@ def plot_theta_v(input_file, output_file=None, time_index=0):
                                    colors='black', linewidths=0.5, alpha=0.5)
         ax.clabel(contour_lines, inline=True, fontsize=8)
         
+        # Add topography contours if available
+        if topo_contours:
+            X2_topo, X3_topo, topo_elev_km = topo_contours
+            topo_lines = ax.contour(X2_topo, X3_topo, topo_elev_km, levels=6,
+                                   colors='brown', linewidths=0.8, alpha=0.6, linestyles='solid')
+            ax.clabel(topo_lines, inline=True, fontsize=6, fmt='%.1f km')
+        
         # Add colorbar
         cbar = plt.colorbar(contour, ax=ax, label='Virtual Potential Temperature (K)')
         
         # Labels and title
-        ax.set_xlabel('X-coordinate (m)')
-        ax.set_ylabel('Y-coordinate (m)')
-        ax.set_title(f'Virtual Potential Temp. at {actual_height:.1f} m')
+        ax.set_xlabel('X-coordinate (km)')
+        ax.set_ylabel('Y-coordinate (km)')
+        ax.set_title(f'Virtual Potential Temp. at {actual_height/1000.0:.1f} km')
+        
+        # Set equal aspect ratio
+        ax.set_aspect('equal', adjustable='box')
         
         # Add grid
         ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
@@ -112,8 +145,11 @@ def plot_theta_v(input_file, output_file=None, time_index=0):
     # Hide the last subplot (we only have 5 plots)
     axes[5].axis('off')
     
+    # Convert time from seconds to hours
+    time_hours = ds["time"].values[time_index] / 3600.0
+    
     # Add overall title
-    fig.suptitle(f'Virtual Potential Temperature - Time: {ds["time"].values[time_index]:.2f} s', 
+    fig.suptitle(f'Virtual Potential Temperature - Time: {time_hours:.2f} hours', 
                  fontsize=16, y=0.995)
     
     plt.tight_layout()
@@ -137,10 +173,12 @@ def main():
     parser.add_argument('-o', '--output', help='Output plot file (PNG)')
     parser.add_argument('-t', '--time', type=int, default=0,
                         help='Time index to plot (default: 0)')
+    parser.add_argument('--topo-dir', help='Directory containing topography .pt files')
+    parser.add_argument('--location', help='Location prefix for topography files (e.g., ws-site1)')
     
     args = parser.parse_args()
     
-    plot_theta_v(args.input_file, args.output, args.time)
+    plot_theta_v(args.input_file, args.output, args.time, args.topo_dir, args.location)
 
 
 if __name__ == '__main__':
