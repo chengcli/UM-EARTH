@@ -47,8 +47,10 @@ def calculate_lcl(temperature, pressure, rh):
     alpha = (a * T_c) / (b + T_c) + np.log(rh_clipped)
     dewpoint = (b * alpha) / (a - alpha)
     
-    # Calculate LCL height using simplified formula
+    # Calculate LCL height using simplified Espy's formula
     # LCL (m) ≈ 125 * (T - Td) where T and Td are in Celsius
+    # Note: This is an approximation valid for typical atmospheric conditions.
+    # More rigorous methods (e.g., Bolton 1980) exist but require iterative calculations.
     lcl_height = 125.0 * (T_c - dewpoint)
     
     # Ensure non-negative heights

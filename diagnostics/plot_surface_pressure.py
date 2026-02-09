@@ -10,7 +10,6 @@ import argparse
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 
 
 def plot_surface_pressure(input_file, output_file=None, time_index=0):
