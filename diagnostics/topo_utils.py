@@ -126,7 +126,9 @@ def find_matching_topography(netcdf_shape, topo_dir, location_prefix):
                 continue
     
     if found_files:
-        print(f"Warning: Found topography files {found_files}, but none match NetCDF shape ({x3_size}, {x2_size})")
+        files_str = '\n  '.join(found_files)
+        print(f"Warning: Found topography files but none match NetCDF shape ({x3_size}, {x2_size}):")
+        print(f"  {files_str}")
     else:
         print(f"Warning: No topography files found matching pattern: {os.path.join(topo_dir, location_prefix)}_*.pt")
     return None
