@@ -19,6 +19,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 from PIL import Image
 import numpy as np
 import xarray as xr
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 
 def find_netcdf_files(directory):
@@ -41,7 +43,7 @@ def find_netcdf_files(directory):
     return out1_files, out2_files
 
 
-def generate_plot(script_name, input_files, output_file, time_index=0, skip=2, topo_dir=None, location=None):
+def generate_plot(script_name, input_files, output_file, time_index=0, skip=2, topo_dir=None, location=None, thread_lock=None):
     """
     Generate a plot using one of the diagnostic scripts.
     
@@ -61,11 +63,13 @@ def generate_plot(script_name, input_files, output_file, time_index=0, skip=2, t
         Directory containing topography .pt files
     location : str, optional
         Location prefix for topography files
+    thread_lock : threading.Lock, optional
+        Lock for thread-safe printing
     
     Returns
     -------
-    bool
-        True if successful, False otherwise
+    tuple
+        (bool, str) - Success status and output file path
     """
     script_dir = Path(__file__).parent
     script_path = script_dir / script_name
@@ -88,17 +92,31 @@ def generate_plot(script_name, input_files, output_file, time_index=0, skip=2, t
         result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True, timeout=120)
         if result.returncode != 0:
             error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-            print(f"  Warning: {script_name} failed with return code {result.returncode}")
-            if error_msg:
-                print(f"           Error: {error_msg}")
-            return False
-        return True
+            if thread_lock:
+                with thread_lock:
+                    print(f"  Warning: {script_name} failed with return code {result.returncode}")
+                    if error_msg:
+                        print(f"           Error: {error_msg}")
+            else:
+                print(f"  Warning: {script_name} failed with return code {result.returncode}")
+                if error_msg:
+                    print(f"           Error: {error_msg}")
+            return False, output_file
+        return True, output_file
     except subprocess.TimeoutExpired:
-        print(f"  Warning: {script_name} timed out")
-        return False
+        if thread_lock:
+            with thread_lock:
+                print(f"  Warning: {script_name} timed out")
+        else:
+            print(f"  Warning: {script_name} timed out")
+        return False, output_file
     except Exception as e:
-        print(f"  Warning: {script_name} failed with exception: {e}")
-        return False
+        if thread_lock:
+            with thread_lock:
+                print(f"  Warning: {script_name} failed with exception: {e}")
+        else:
+            print(f"  Warning: {script_name} failed with exception: {e}")
+        return False, output_file
 
 
 def combine_plots_to_pdf(plot_groups, output_pdf):
@@ -171,7 +189,7 @@ def get_time_indices(netcdf_file):
 
 
 def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=None, 
-                      skip=2, cleanup=True, topo_dir=None, location=None, all_times=False):
+                      skip=2, cleanup=True, topo_dir=None, location=None, all_times=False, num_threads=1):
     """
     Process all NetCDF files in a directory and generate plots.
     
@@ -195,6 +213,8 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
         Location prefix for topography files (e.g., 'ws-site1')
     all_times : bool
         If True, process all time indices and group by hour in PDF
+    num_threads : int
+        Number of threads to use for parallel processing (default: 1 for serial)
     """
     input_dir = os.path.abspath(input_dir)
     
@@ -212,6 +232,7 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
     print(f"Processing NetCDF files in: {input_dir}")
     print(f"Output directory: {output_dir}")
     print(f"Output PDF: {output_pdf}")
+    print(f"Using {num_threads} thread(s) for plotting")
     
     # Validate topography parameters
     if topo_dir and not location:
@@ -251,59 +272,59 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
     # Dictionary to group plots by time (for PDF sections)
     plots_by_time = {}
     
+    # Create a thread lock for thread-safe printing
+    thread_lock = threading.Lock() if num_threads > 1 else None
+    
     # Process each time index
     for tidx in time_indices:
         print(f"Processing time index {tidx}...")
-        plots_for_time = []
+        
+        # Collect all plot tasks for this time index
+        plot_tasks = []
         
         # Process each out1 file
         for i, out1_file in enumerate(out1_files, 1):
             basename = os.path.basename(out1_file)
-            print(f"  [{i}/{len(out1_files)}] Processing {basename}...")
+            
+            if num_threads == 1:
+                print(f"  [{i}/{len(out1_files)}] Processing {basename}...")
             
             # Generate base name for output files
             base_name = basename.replace(".nc", "").replace("out1", "")
             
             # 1. Surface pressure
-            print(f"    - Generating surface pressure plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_surface_pressure.png")
-            if generate_plot("plot_surface_pressure.py", [out1_file], output_file, tidx, skip, topo_dir, location):
-                plots_for_time.append(output_file)
+            plot_tasks.append(("plot_surface_pressure.py", [out1_file], output_file, tidx, skip, topo_dir, location, "surface pressure"))
             
             # 2. Vertical velocity
-            print(f"    - Generating vertical velocity plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_vertical_velocity.png")
-            if generate_plot("plot_vertical_velocity.py", [out1_file], output_file, tidx, skip, topo_dir, location):
-                plots_for_time.append(output_file)
+            plot_tasks.append(("plot_vertical_velocity.py", [out1_file], output_file, tidx, skip, topo_dir, location, "vertical velocity"))
             
             # 3. Horizontal velocity
-            print(f"    - Generating horizontal velocity plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_horizontal_velocity.png")
-            if generate_plot("plot_horizontal_velocity.py", [out1_file], output_file, tidx, skip, topo_dir, location):
-                plots_for_time.append(output_file)
+            plot_tasks.append(("plot_horizontal_velocity.py", [out1_file], output_file, tidx, skip, topo_dir, location, "horizontal velocity"))
         
         # Process each out2 file
         for i, out2_file in enumerate(out2_files, 1):
             basename = os.path.basename(out2_file)
-            print(f"  [{i}/{len(out2_files)}] Processing {basename}...")
+            
+            if num_threads == 1:
+                print(f"  [{i}/{len(out2_files)}] Processing {basename}...")
             
             # Generate base name for output files
             base_name = basename.replace(".nc", "").replace("out2", "")
             
             # 4. Water paths
-            print(f"    - Generating water paths plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_water_paths.png")
-            if generate_plot("plot_water_paths.py", [out2_file], output_file, tidx, skip, topo_dir, location):
-                plots_for_time.append(output_file)
+            plot_tasks.append(("plot_water_paths.py", [out2_file], output_file, tidx, skip, topo_dir, location, "water paths"))
             
             # 5. Virtual potential temperature
-            print(f"    - Generating theta_v plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_theta_v.png")
-            if generate_plot("plot_theta_v.py", [out2_file], output_file, tidx, skip, topo_dir, location):
-                plots_for_time.append(output_file)
+            plot_tasks.append(("plot_theta_v.py", [out2_file], output_file, tidx, skip, topo_dir, location, "theta_v"))
         
         # Process LCL (requires both out1 and out2)
-        print(f"  Processing LCL plots...")
+        if num_threads == 1:
+            print(f"  Processing LCL plots...")
         for i, out1_file in enumerate(out1_files, 1):
             # Try to find matching out2 file
             basename = os.path.basename(out1_file)
@@ -313,11 +334,43 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
             if matching_out2:
                 out2_file = matching_out2[0]
                 base_name = basename.replace(".nc", "").replace("out1", "")
-                print(f"    [{i}/{len(out1_files)}] Generating LCL plot for {basename}...")
                 
                 output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_lcl.png")
-                if generate_plot("plot_lcl.py", [out1_file, out2_file], output_file, tidx, skip, topo_dir, location):
-                    plots_for_time.append(output_file)
+                plot_tasks.append(("plot_lcl.py", [out1_file, out2_file], output_file, tidx, skip, topo_dir, location, "LCL"))
+        
+        # Execute plot tasks (serial or parallel)
+        plots_for_time = []
+        
+        if num_threads == 1:
+            # Serial execution (original behavior)
+            for script_name, input_files, output_file, tidx, skip, topo_dir, location, plot_type in plot_tasks:
+                if num_threads == 1:
+                    print(f"    - Generating {plot_type} plot...")
+                success, out_file = generate_plot(script_name, input_files, output_file, tidx, skip, topo_dir, location, thread_lock)
+                if success:
+                    plots_for_time.append(out_file)
+        else:
+            # Parallel execution using ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=num_threads) as executor:
+                # Submit all tasks
+                future_to_task = {}
+                for task in plot_tasks:
+                    script_name, input_files, output_file, tidx, skip, topo_dir, location, plot_type = task
+                    future = executor.submit(generate_plot, script_name, input_files, output_file, tidx, skip, topo_dir, location, thread_lock)
+                    future_to_task[future] = (plot_type, output_file)
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_task):
+                    plot_type, output_file = future_to_task[future]
+                    try:
+                        success, out_file = future.result()
+                        if success:
+                            plots_for_time.append(out_file)
+                            with thread_lock:
+                                print(f"    ✓ Completed {plot_type} plot")
+                    except Exception as exc:
+                        with thread_lock:
+                            print(f"    ✗ {plot_type} plot generated an exception: {exc}")
         
         plots_by_time[tidx] = plots_for_time
     
@@ -387,17 +440,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process single time index (default: 0)
-  python generate_all_plots.py ws-site1-2026-02-08/
+  # Process single time index (default: 0) with 4 threads
+  python generate_all_plots.py ws-site1-2026-02-08/ --threads 4
   
-  # Process all time indices with topography overlay
-  python generate_all_plots.py ws-site1-2026-02-08/ --all-times --topo-dir Topo/Data/Split/ws-site1/ --location ws-site1
+  # Process all time indices with topography overlay using 8 threads
+  python generate_all_plots.py ws-site1-2026-02-08/ --all-times --threads 8 --topo-dir Topo/Data/Split/ws-site1/ --location ws-site1
   
   # Specify output directory and PDF name
-  python generate_all_plots.py ws-site1-2026-02-08/ -d output/ -p results.pdf
+  python generate_all_plots.py ws-site1-2026-02-08/ -d output/ -p results.pdf --threads 4
   
   # Process specific time index and keep PNG files
-  python generate_all_plots.py ws-site1-2026-02-08/ -t 5 --no-cleanup
+  python generate_all_plots.py ws-site1-2026-02-08/ -t 5 --no-cleanup --threads 1
         """
     )
     parser.add_argument('input_dir', help='Directory containing NetCDF files')
@@ -407,6 +460,8 @@ Examples:
                         help='Time index to plot (default: 0). Ignored if --all-times is set.')
     parser.add_argument('-s', '--skip', type=int, default=2,
                         help='Skip factor for velocity arrows (default: 2)')
+    parser.add_argument('--threads', type=int, default=1,
+                        help='Number of threads for parallel processing (default: 1 for serial execution)')
     parser.add_argument('--no-cleanup', action='store_true',
                         help='Keep individual PNG files after creating PDF')
     parser.add_argument('--topo-dir', help='Directory containing topography .pt files')
@@ -420,6 +475,10 @@ Examples:
         print(f"Error: Directory not found: {args.input_dir}")
         return 1
     
+    if args.threads < 1:
+        print(f"Error: Number of threads must be at least 1")
+        return 1
+    
     success = process_directory(
         args.input_dir,
         output_dir=args.output_dir,
@@ -429,7 +488,8 @@ Examples:
         cleanup=not args.no_cleanup,
         topo_dir=args.topo_dir,
         location=args.location,
-        all_times=args.all_times
+        all_times=args.all_times,
+        num_threads=args.threads
     )
     
     return 0 if success else 1

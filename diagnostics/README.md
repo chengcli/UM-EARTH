@@ -4,42 +4,68 @@ This directory contains Python scripts for creating diagnostic plots from UM-EAR
 
 ## New Features
 
+- **Multi-threading Support**: Speed up plot generation using multiple threads for parallel processing
 - **Unit Conversions**: Plots now use km for spatial dimensions, cm/s for vertical velocity, m/s for horizontal velocity, and hours for time
 - **Topographic Contours**: Optional topography overlays from .pt files
 - **Equal Aspect Ratio**: Horizontal dimensions maintain equal aspect ratio
 - **PDF Bookmarks**: When processing multiple time steps, plots are grouped by hour with section bookmarks
+- **HPC Cluster Support**: SLURM submission script for running on high-performance computing clusters
 
 ## Quick Start - Master Script
 
 To generate all diagnostic plots and combine them into a single PDF:
 
 ```bash
+# Single-threaded (default)
 python generate_all_plots.py <directory_with_netcdf_files>
+
+# Multi-threaded (faster - recommended)
+python generate_all_plots.py <directory_with_netcdf_files> --threads 8
 ```
 
 This will:
 1. Find all `out1*.nc` and `out2*.nc` files in the directory
-2. Generate all diagnostic plots for each file
+2. Generate all diagnostic plots for each file (in parallel if --threads > 1)
 3. Combine all plots into a single PDF file (`diagnostic_plots.pdf`)
+
+## HPC Cluster Usage
+
+For running on an HPC cluster with SLURM, use the provided submission script:
+
+```bash
+# Edit submit_diagnostics.slurm to configure your settings
+# Update: account, experiment name, location, paths, etc.
+nano submit_diagnostics.slurm
+
+# Submit the job
+sbatch submit_diagnostics.slurm
+```
+
+The SLURM script automatically:
+- Uses all allocated CPUs for multi-threaded processing
+- Processes all time indices
+- Includes topography overlays
+- Saves all output to a dedicated plots directory
+- Moves log files to the output directory
 
 ### Examples
 
 ```bash
-# Process single time index (default: 0)
-python generate_all_plots.py ws-site1-2026-02-08/
+# Process single time index (default: 0) with 4 threads
+python generate_all_plots.py ws-site1-2026-02-08/ --threads 4
 
-# Process all time indices with topography overlay
-python generate_all_plots.py ws-site1-2026-02-08/ --all-times \
+# Process all time indices with topography overlay using 8 threads
+python generate_all_plots.py ws-site1-2026-02-08/ --all-times --threads 8 \
   --topo-dir Topo/Data/Split/ws-site1/ --location ws-site1
 
-# Specify output directory and PDF name
-python generate_all_plots.py ws-site1-2026-02-08/ -d output/ -p results.pdf
+# Specify output directory and PDF name with multi-threading
+python generate_all_plots.py ws-site1-2026-02-08/ -d output/ -p results.pdf --threads 4
 
-# Process specific time index and keep PNG files
-python generate_all_plots.py ws-site1-2026-02-08/ -t 5 --no-cleanup
+# Process specific time index and keep PNG files (single-threaded)
+python generate_all_plots.py ws-site1-2026-02-08/ -t 5 --no-cleanup --threads 1
 
 # Adjust arrow density for velocity plots
-python generate_all_plots.py ws-site1-2026-02-08/ -s 3
+python generate_all_plots.py ws-site1-2026-02-08/ -s 3 --threads 4
 ```
 
 ### Master Script Options
@@ -48,10 +74,19 @@ python generate_all_plots.py ws-site1-2026-02-08/ -s 3
 - `-p, --pdf`: Output PDF filename (default: diagnostic_plots.pdf)
 - `-t, --time`: Time index to plot (default: 0). Ignored if --all-times is set.
 - `-s, --skip`: Skip factor for velocity arrows (default: 2)
+- `--threads`: Number of threads for parallel processing (default: 1 for serial execution)
 - `--no-cleanup`: Keep individual PNG files after creating PDF
 - `--topo-dir`: Directory containing topography .pt files (**required with --location**)
 - `--location`: Location prefix for topography files (e.g., ws-site1) (**required with --topo-dir**)
 - `--all-times`: Process all time indices and group by hour in PDF
+
+### Performance Tips
+
+- **Multi-threading**: Use `--threads 4` or `--threads 8` to significantly speed up plot generation
+  - Recommended: Use number of CPU cores available (typically 4-16 on HPC clusters)
+  - Example speedup: 6 plots taking 2 minutes each = 12 minutes serial vs ~3 minutes with 4 threads
+- **HPC Clusters**: Use the provided `submit_diagnostics.slurm` script for optimal performance
+- **Memory**: Each thread needs ~2GB RAM; adjust `--mem` in SLURM script if needed
 
 **Important**: Both `--topo-dir` and `--location` must be provided together to enable topography overlays. If only one is provided, a warning will be displayed and topography will not be overlaid.
 
