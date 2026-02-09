@@ -49,9 +49,11 @@ python generate_all_plots.py ws-site1-2026-02-08/ -s 3
 - `-t, --time`: Time index to plot (default: 0). Ignored if --all-times is set.
 - `-s, --skip`: Skip factor for velocity arrows (default: 2)
 - `--no-cleanup`: Keep individual PNG files after creating PDF
-- `--topo-dir`: Directory containing topography .pt files
-- `--location`: Location prefix for topography files (e.g., ws-site1)
+- `--topo-dir`: Directory containing topography .pt files (**required with --location**)
+- `--location`: Location prefix for topography files (e.g., ws-site1) (**required with --topo-dir**)
 - `--all-times`: Process all time indices and group by hour in PDF
+
+**Important**: Both `--topo-dir` and `--location` must be provided together to enable topography overlays. If only one is provided, a warning will be displayed and topography will not be overlaid.
 
 ## Topography Files
 

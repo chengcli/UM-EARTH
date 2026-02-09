@@ -84,9 +84,10 @@ def generate_plot(script_name, input_files, output_file, time_index=0, skip=2, t
         cmd.extend(["--location", location])
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        # Run without capturing output so progress is visible
+        result = subprocess.run(cmd, timeout=120)
         if result.returncode != 0:
-            print(f"  Warning: {script_name} failed: {result.stderr}")
+            print(f"  Warning: {script_name} failed with return code {result.returncode}")
             return False
         return True
     except subprocess.TimeoutExpired:
@@ -210,8 +211,13 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
     print(f"Output PDF: {output_pdf}")
     if topo_dir:
         print(f"Topography directory: {topo_dir}")
+        if not location:
+            print("WARNING: --topo-dir provided without --location. Topography will NOT be overlaid.")
+            print("         Use --location <prefix> to specify the location prefix (e.g., ws-site1)")
     if location:
         print(f"Location prefix: {location}")
+        if not topo_dir:
+            print("WARNING: --location provided without --topo-dir. Topography will NOT be overlaid.")
     print()
     
     # Find NetCDF files
@@ -245,21 +251,25 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
         # Process each out1 file
         for i, out1_file in enumerate(out1_files, 1):
             basename = os.path.basename(out1_file)
+            print(f"  [{i}/{len(out1_files)}] Processing {basename}...")
             
             # Generate base name for output files
             base_name = basename.replace(".nc", "").replace("out1", "")
             
             # 1. Surface pressure
+            print(f"    - Generating surface pressure plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_surface_pressure.png")
             if generate_plot("plot_surface_pressure.py", [out1_file], output_file, tidx, skip, topo_dir, location):
                 plots_for_time.append(output_file)
             
             # 2. Vertical velocity
+            print(f"    - Generating vertical velocity plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_vertical_velocity.png")
             if generate_plot("plot_vertical_velocity.py", [out1_file], output_file, tidx, skip, topo_dir, location):
                 plots_for_time.append(output_file)
             
             # 3. Horizontal velocity
+            print(f"    - Generating horizontal velocity plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_horizontal_velocity.png")
             if generate_plot("plot_horizontal_velocity.py", [out1_file], output_file, tidx, skip, topo_dir, location):
                 plots_for_time.append(output_file)
@@ -267,22 +277,26 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
         # Process each out2 file
         for i, out2_file in enumerate(out2_files, 1):
             basename = os.path.basename(out2_file)
+            print(f"  [{i}/{len(out2_files)}] Processing {basename}...")
             
             # Generate base name for output files
             base_name = basename.replace(".nc", "").replace("out2", "")
             
             # 4. Water paths
+            print(f"    - Generating water paths plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_water_paths.png")
             if generate_plot("plot_water_paths.py", [out2_file], output_file, tidx, skip, topo_dir, location):
                 plots_for_time.append(output_file)
             
             # 5. Virtual potential temperature
+            print(f"    - Generating theta_v plot...")
             output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_theta_v.png")
             if generate_plot("plot_theta_v.py", [out2_file], output_file, tidx, skip, topo_dir, location):
                 plots_for_time.append(output_file)
         
         # Process LCL (requires both out1 and out2)
-        for out1_file in out1_files:
+        print(f"  Processing LCL plots...")
+        for i, out1_file in enumerate(out1_files, 1):
             # Try to find matching out2 file
             basename = os.path.basename(out1_file)
             out2_pattern = basename.replace("out1", "out2")
@@ -291,6 +305,7 @@ def process_directory(input_dir, output_dir=None, output_pdf=None, time_index=No
             if matching_out2:
                 out2_file = matching_out2[0]
                 base_name = basename.replace(".nc", "").replace("out1", "")
+                print(f"    [{i}/{len(out1_files)}] Generating LCL plot for {basename}...")
                 
                 output_file = os.path.join(output_dir, f"{base_name}_t{tidx:03d}_lcl.png")
                 if generate_plot("plot_lcl.py", [out1_file, out2_file], output_file, tidx, skip, topo_dir, location):
