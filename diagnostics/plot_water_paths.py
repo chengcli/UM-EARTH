@@ -80,7 +80,7 @@ def plot_water_paths(input_file, output_file=None, time_index=0, topo_dir=None, 
         if topo_contours:
             X2_topo, X3_topo, topo_elev_km = topo_contours
             topo_lines = ax1.contour(X2_topo, X3_topo, topo_elev_km, levels=6,
-                                    colors='brown', linewidths=0.8, alpha=0.6, linestyles='solid')
+                                    colors='purple', linewidths=0.8, alpha=0.6, linestyles='solid')
             ax1.clabel(topo_lines, inline=True, fontsize=7, fmt='%.1f km')
         
         # Add colorbar
@@ -119,7 +119,7 @@ def plot_water_paths(input_file, output_file=None, time_index=0, topo_dir=None, 
         if topo_contours:
             X2_topo, X3_topo, topo_elev_km = topo_contours
             topo_lines = ax2.contour(X2_topo, X3_topo, topo_elev_km, levels=6,
-                                    colors='brown', linewidths=0.8, alpha=0.6, linestyles='solid')
+                                    colors='purple', linewidths=0.8, alpha=0.6, linestyles='solid')
             ax2.clabel(topo_lines, inline=True, fontsize=7, fmt='%.1f km')
         
         # Add colorbar
