@@ -168,13 +168,15 @@ def extract_and_interpolate(dataset, var_name, time, x1, x3_idx, x2_idx, x2_frac
     float
         Interpolated value at the specified location
     """
+    # Extract 2x2 slice around the target location
     data = dataset[var_name].isel(time=time, x1=x1).values[x3_idx:x3_idx+2, x2_idx:x2_idx+2]
+    # Indices are 0, 0 because data has been pre-sliced to a 2x2 interpolation window
     return interpolate_2d(data, 0, 0, x2_frac, x3_frac)
 
 
 def calculate_lcl(temperature, pressure, rh):
     """
-    Calculate the Lift Condensation Level (LCL) height.
+    Calculate the Lifting Condensation Level (LCL) height.
     
     Uses the approximation formula based on temperature and dewpoint.
     
@@ -308,6 +310,7 @@ def extract_time_series(input_file_out1, input_file_out2, lat, lon,
         press_interp = extract_and_interpolate(ds1, 'press', t, 0, x3_idx, x2_idx, x2_frac, x3_frac)
         temp_interp = extract_and_interpolate(ds2, 'temp', t, 0, x3_idx, x2_idx, x2_frac, x3_frac)
         
+        # Check for relative humidity (rh_H2O_l_ is the NetCDF variable name with trailing underscore)
         if 'rh_H2O_l_' in ds2.data_vars:
             rh_interp = extract_and_interpolate(ds2, 'rh_H2O_l_', t, 0, x3_idx, x2_idx, x2_frac, x3_frac)
         else:
