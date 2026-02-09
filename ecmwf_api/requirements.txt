@@ -5,3 +5,5 @@ numpy
 scipy
 PyYAML
 torch
+matplotlib
+Pillow
