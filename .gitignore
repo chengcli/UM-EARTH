@@ -23,3 +23,7 @@ log*
 
 # junk
 z.junk/*
+
+# generated plots
+*.pdf
+*.png
