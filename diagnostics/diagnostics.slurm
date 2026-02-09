@@ -4,7 +4,7 @@
 #SBATCH -A nrenno1                  # account (update this to your account)
 #SBATCH -p standard                 # partition
 #SBATCH -N 1                        # number of nodes
-#SBATCH --mem=16G                   # request memory
+#SBATCH --mem=40G                   # request memory
 #SBATCH --ntasks-per-node=1         # tasks per node
 #SBATCH --cpus-per-task=8           # CPU cores per task (for multi-threading)
 #SBATCH -t 02:00:00                 # wall time (2 hours)
@@ -22,7 +22,8 @@ LOCATION=ws-site1
 EXP_DIR=${LOCATION}-${EXP_NAME}
 INPUT_DIR=${PWD}/${EXP_DIR}
 OUTPUT_DIR=${PWD}/${EXP_DIR}/plots
-TOPO_DIR=${PWD}/Topo/Data/Split/${LOCATION}
+#TOPO_DIR=${PWD}/Topo/Data/Split/${LOCATION}
+TOPO_DIR=${PWD}/input
 
 # Number of threads for parallel processing
 # Use the number of CPUs allocated
@@ -52,7 +53,7 @@ mkdir -p ${OUTPUT_DIR}
 # Process all time indices and generate PDF with topography overlays
 python3 generate_all_plots.py ${INPUT_DIR} \
     --output-dir ${OUTPUT_DIR} \
-    --pdf ${OUTPUT_DIR}/diagnostic_plots.pdf \
+    --pdf ${OUTPUT_DIR}/frigate_diagnostic_plots.pdf \
     --all-times \
     --threads ${NUM_THREADS} \
     --topo-dir ${TOPO_DIR} \
@@ -64,7 +65,7 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "================================================"
     echo "Diagnostic plotting completed successfully!"
-    echo "Output PDF: ${OUTPUT_DIR}/diagnostic_plots.pdf"
+    echo "Output PDF: ${OUTPUT_DIR}/frigate_diagnostic_plots.pdf"
     echo "================================================"
 else
     echo ""
