@@ -8,14 +8,19 @@ This script generates time series plots for:
 3. PBL winds (top) vs time
 4. PBL winds (middle) vs time
 5. Surface wind vs time
+
+Can process single file pairs or batch process all files in a directory.
 """
 
 import argparse
 import csv
+import glob
+import os
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from PIL import Image
 
 
 # Constants
@@ -437,33 +442,259 @@ def plot_time_series(data, output_file, lat, lon):
     plt.close()
 
 
+def find_netcdf_file_pairs(directory):
+    """
+    Find all matching out1 and out2 NetCDF file pairs in a directory.
+    
+    Parameters
+    ----------
+    directory : str
+        Directory to search for NetCDF files
+    
+    Returns
+    -------
+    list of tuples
+        List of (out1_file, out2_file) pairs
+    """
+    out1_files = sorted(glob.glob(os.path.join(directory, "*out1*.nc")))
+    out2_files = sorted(glob.glob(os.path.join(directory, "*out2*.nc")))
+    
+    # Match files by replacing out1 with out2
+    pairs = []
+    for out1_file in out1_files:
+        basename = os.path.basename(out1_file)
+        out2_pattern = basename.replace("out1", "out2")
+        matching_out2 = [f for f in out2_files if os.path.basename(f) == out2_pattern]
+        
+        if matching_out2:
+            pairs.append((out1_file, matching_out2[0]))
+        else:
+            print(f"Warning: No matching out2 file found for {basename}")
+    
+    return pairs
+
+
+def combine_plots_to_pdf(plot_files, output_pdf):
+    """
+    Combine multiple PNG plots into a single PDF file.
+    
+    Parameters
+    ----------
+    plot_files : list
+        List of PNG file paths to combine
+    output_pdf : str
+        Output PDF file path
+    """
+    print(f"\nCombining {len(plot_files)} plot(s) into PDF: {output_pdf}")
+    
+    with PdfPages(output_pdf, metadata={'Title': 'Time Series Plots'}) as pdf:
+        for plot_file in plot_files:
+            if os.path.exists(plot_file):
+                try:
+                    # Load image
+                    img = Image.open(plot_file)
+                    
+                    # Create figure with appropriate size
+                    fig = plt.figure(figsize=(11, 8.5))  # Letter size
+                    ax = fig.add_subplot(111)
+                    ax.imshow(img)
+                    ax.axis('off')
+                    
+                    # Add title with filename
+                    filename = os.path.basename(plot_file)
+                    fig.suptitle(filename, fontsize=10, y=0.98)
+                    
+                    plt.tight_layout()
+                    
+                    # Save to PDF
+                    pdf.savefig(fig, dpi=150, bbox_inches='tight')
+                    
+                    plt.close(fig)
+                    
+                    print(f"  Added: {filename}")
+                except Exception as e:
+                    print(f"  Warning: Could not add {plot_file} to PDF: {e}")
+    
+    print(f"PDF created: {output_pdf}")
+
+
+def process_directory(directory, lat, lon, location, locations_csv='../locations.csv',
+                     output_dir=None, output_pdf='time_series_all.pdf', cleanup=True):
+    """
+    Process all NetCDF file pairs in a directory and combine into a PDF.
+    
+    Parameters
+    ----------
+    directory : str
+        Directory containing NetCDF files
+    lat : float
+        Latitude of the location
+    lon : float
+        Longitude of the location
+    location : str
+        Location name from locations.csv
+    locations_csv : str
+        Path to locations.csv file
+    output_dir : str, optional
+        Output directory (default: same as input directory)
+    output_pdf : str
+        Output PDF filename
+    cleanup : bool
+        Whether to delete individual PNG files after creating PDF
+    """
+    directory = os.path.abspath(directory)
+    
+    if output_dir is None:
+        output_dir = directory
+    else:
+        output_dir = os.path.abspath(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+    
+    output_pdf_path = os.path.join(output_dir, output_pdf)
+    
+    print(f"Processing NetCDF files in: {directory}")
+    print(f"Output directory: {output_dir}")
+    print(f"Output PDF: {output_pdf_path}")
+    print(f"Location: ({lat}, {lon}) - {location}")
+    print()
+    
+    # Find file pairs
+    file_pairs = find_netcdf_file_pairs(directory)
+    
+    if not file_pairs:
+        print(f"Error: No matching out1/out2 file pairs found in {directory}")
+        return False
+    
+    print(f"Found {len(file_pairs)} file pair(s)")
+    print()
+    
+    # Process each file pair
+    plot_files = []
+    for i, (out1_file, out2_file) in enumerate(file_pairs, 1):
+        basename = os.path.basename(out1_file)
+        print(f"[{i}/{len(file_pairs)}] Processing {basename}...")
+        
+        # Generate output filename
+        base_name = basename.replace(".nc", "").replace("out1", "")
+        output_file = os.path.join(output_dir, f"{base_name}_timeseries.png")
+        
+        try:
+            # Extract time series
+            data = extract_time_series(out1_file, out2_file, lat, lon, location, locations_csv)
+            
+            # Create plot
+            plot_time_series(data, output_file, lat, lon)
+            plot_files.append(output_file)
+            
+        except Exception as e:
+            print(f"  Error processing {basename}: {e}")
+            continue
+    
+    print()
+    
+    # Combine into PDF
+    if plot_files:
+        combine_plots_to_pdf(plot_files, output_pdf_path)
+        
+        # Cleanup individual PNG files if requested
+        if cleanup:
+            print("\nCleaning up individual PNG files...")
+            for plot_file in plot_files:
+                try:
+                    os.remove(plot_file)
+                    print(f"  Removed: {os.path.basename(plot_file)}")
+                except Exception as e:
+                    print(f"  Warning: Could not remove {plot_file}: {e}")
+        
+        return True
+    else:
+        print("Error: No plots were successfully generated")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate time series plots at a specific lat/lon location'
+        description='Generate time series plots at a specific lat/lon location',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Single file pair
+  %(prog)s out1.nc out2.nc 33.5 -106.5 ws-site1 -o timeseries.pdf
+  
+  # Process all files in a directory
+  %(prog)s /path/to/data/ 33.5 -106.5 ws-site1 --batch -o output_dir/
+        """
     )
-    parser.add_argument('input_file_out1', help='Input NetCDF file with pressure and velocities (out1.nc)')
-    parser.add_argument('input_file_out2', help='Input NetCDF file with temperature (out2.nc)')
+    parser.add_argument('input_file_out1', 
+                       help='Input NetCDF file with pressure and velocities (out1.nc) or directory for batch mode')
+    parser.add_argument('input_file_out2', nargs='?',
+                       help='Input NetCDF file with temperature (out2.nc), not needed in batch mode')
     parser.add_argument('lat', type=float, help='Latitude of the location')
     parser.add_argument('lon', type=float, help='Longitude of the location')
     parser.add_argument('location', help='Location name (from locations.csv)')
     parser.add_argument('-o', '--output', default='time_series.pdf',
-                        help='Output plot file (PDF or PNG, default: time_series.pdf)')
+                       help='Output plot file (PDF or PNG for single mode, directory or PDF name for batch mode)')
     parser.add_argument('--locations-csv', default='../locations.csv',
-                        help='Path to locations.csv file (default: ../locations.csv)')
+                       help='Path to locations.csv file (default: ../locations.csv)')
+    parser.add_argument('--batch', action='store_true',
+                       help='Process all NetCDF file pairs in the input directory')
+    parser.add_argument('--no-cleanup', action='store_true',
+                       help='Keep individual PNG files (only for batch mode)')
     
     args = parser.parse_args()
     
-    # Extract time series
-    print("Extracting time series data...")
-    data = extract_time_series(args.input_file_out1, args.input_file_out2,
-                               args.lat, args.lon, args.location, args.locations_csv)
+    if args.batch:
+        # Batch mode: process directory
+        directory = args.input_file_out1
+        if not os.path.isdir(directory):
+            print(f"Error: {directory} is not a directory")
+            return 1
+        
+        # Determine output directory and PDF name
+        if args.output.endswith('.pdf'):
+            output_dir = os.path.dirname(args.output) or '.'
+            output_pdf = os.path.basename(args.output)
+        elif os.path.isdir(args.output):
+            output_dir = args.output
+            output_pdf = 'time_series_all.pdf'
+        else:
+            output_dir = '.'
+            output_pdf = args.output if args.output != 'time_series.pdf' else 'time_series_all.pdf'
+        
+        success = process_directory(
+            directory, args.lat, args.lon, args.location,
+            locations_csv=args.locations_csv,
+            output_dir=output_dir,
+            output_pdf=output_pdf,
+            cleanup=not args.no_cleanup
+        )
+        
+        if success:
+            print("\nDone!")
+            return 0
+        else:
+            return 1
     
-    # Create plots
-    print("Creating plots...")
-    plot_time_series(data, args.output, args.lat, args.lon)
-    
-    print("Done!")
+    else:
+        # Single file mode
+        if args.input_file_out2 is None:
+            print("Error: input_file_out2 is required in single file mode")
+            parser.print_help()
+            return 1
+        
+        # Extract time series
+        print("Extracting time series data...")
+        data = extract_time_series(args.input_file_out1, args.input_file_out2,
+                                   args.lat, args.lon, args.location, args.locations_csv)
+        
+        # Create plots
+        print("Creating plots...")
+        plot_time_series(data, args.output, args.lat, args.lon)
+        
+        print("Done!")
+        return 0
 
 
 if __name__ == '__main__':
-    main()
+    import sys
+    sys.exit(main())

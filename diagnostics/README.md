@@ -204,8 +204,13 @@ Creates contour plots of virtual potential temperature (in K) at multiple height
 
 ### 7. Time Series at a Location
 ```bash
+# Single file pair
 python plot_time_series.py <out1.nc> <out2.nc> <lat> <lon> <location_name> \
   -o time_series.pdf [--locations-csv ../locations.csv]
+
+# Batch mode: process all files in a directory
+python plot_time_series.py <directory> <lat> <lon> <location_name> \
+  --batch -o time_series_all.pdf [--no-cleanup]
 ```
 
 Creates time series plots at a specific lat/lon location showing:
@@ -220,12 +225,22 @@ Creates time series plots at a specific lat/lon location showing:
 - `lon`: Longitude of the location (decimal degrees, negative for West)
 - `location_name`: Name of the location from locations.csv (e.g., 'ws-site1', 'ann-arbor')
 - `--locations-csv`: Path to locations.csv file (default: ../locations.csv)
+- `--batch`: Process all NetCDF file pairs in the input directory
+- `--no-cleanup`: Keep individual PNG files (only for batch mode)
 
-**Example:**
+**Examples:**
 ```bash
-# Time series for White Sands Site 1 at coordinates (33.5, -106.5)
+# Single file pair: Time series for White Sands Site 1 at coordinates (33.5, -106.5)
 python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
   -o timeseries_ws_site1.pdf
+
+# Batch mode: Process all files in a directory
+python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
+  --batch -o timeseries_all.pdf
+
+# Batch mode: Keep individual PNG files
+python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
+  --batch -o output_dir/timeseries.pdf --no-cleanup
 ```
 
 **Notes:**
@@ -234,7 +249,8 @@ python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
 - PBL height is defined as the lowest level where potential temperature change > 0.5 K
 - PBL winds (top) are measured at the PBL height
 - PBL winds (middle) are measured at half the PBL height
-- Output is a multi-panel PDF showing all five time series
+- Single mode: Output is a multi-panel PDF showing all five time series
+- Batch mode: Output is a multi-page PDF with one page per file pair
 
 ## Common Options
 
@@ -274,9 +290,13 @@ python plot_lcl.py out1.nc out2.nc -o lcl.png \
 python plot_theta_v.py out2.nc -o theta_v.png \
   --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
 
-# Time series at a specific location
+# Time series at a specific location (single file)
 python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
   -o timeseries.pdf
+
+# Time series for all files in a directory (batch mode)
+python plot_time_series.py /path/to/simulation/output/ 33.5 -106.5 ws-site1 \
+  --batch -o timeseries_all.pdf
 ```
 
 ## Output
