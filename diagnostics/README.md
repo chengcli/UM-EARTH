@@ -202,6 +202,69 @@ Creates contour plots of virtual potential temperature (in K) at multiple height
 - 3 km
 - 4 km
 
+### 7. Time Series at a Location
+```bash
+# Single file pair
+python plot_time_series.py <out1.nc> <out2.nc> <lat> <lon> <location_name> \
+  -o time_series.pdf [--locations-csv ../locations.csv]
+
+# Batch mode: process all files in a directory
+python plot_time_series.py <directory> <lat> <lon> <location_name> \
+  -d <output_dir> -p time_series_all.pdf [--threads N] [--no-cleanup]
+```
+
+Creates time series plots at a specific lat/lon location showing:
+1. Lifting Condensation Level (LCL) vs time
+2. Planetary Boundary Layer (PBL) height vs time
+3. PBL winds (top) vs time
+4. PBL winds (middle) vs time
+5. Surface wind vs time
+
+**Arguments:**
+- `lat`: Latitude of the location (decimal degrees)
+- `lon`: Longitude of the location (decimal degrees, negative for West)
+- `location_name`: Name of the location from locations.csv (e.g., 'ws-site1', 'ann-arbor')
+- `-o, --output`: Output file for single mode (default: time_series.pdf)
+- `-d, --output-dir`: Output directory for batch mode (default: same as input directory)
+- `-p, --pdf`: Output PDF filename for batch mode (default: time_series_all.pdf)
+- `--locations-csv`: Path to locations.csv file (default: ../locations.csv)
+- `--threads`: Number of worker processes for parallel processing (default: 1, option named for backward compatibility)
+- `--no-cleanup`: Keep individual PNG files in batch mode
+
+**Examples:**
+```bash
+# Single file pair: Time series for White Sands Site 1 at coordinates (33.5, -106.5)
+python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
+  -o timeseries_ws_site1.pdf
+
+# Batch mode: Process all files in a directory (serial)
+python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
+  -p timeseries_all.pdf
+
+# Batch mode with parallel processing (4 processes)
+python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
+  --threads 4 -p timeseries.pdf
+
+# Batch mode: Custom output directory and keep PNG files
+python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
+  -d output_dir/ -p timeseries.pdf --no-cleanup
+```
+
+**Notes:**
+- The script uses lat/lon bounds from locations.csv to map to cartesian coordinates
+- Linear interpolation is used to extract data at the exact lat/lon position
+- PBL height is defined as the lowest level where potential temperature change > 0.5 K
+- PBL winds (top) are measured at the PBL height
+- PBL winds (middle) are measured at half the PBL height
+- Single mode: Output is a multi-panel PDF showing all five time series
+- Batch mode: Output is a multi-page PDF with one page per file pair
+- Parallel processing significantly speeds up batch processing of multiple files:
+  - Uses **ProcessPoolExecutor** for true parallelism (separate processes)
+  - Each process has its own memory space, avoiding NetCDF/HDF5 thread-safety issues
+  - Data extraction is parallelized across processes
+  - Plot creation is serialized in the main process (matplotlib safety)
+  - Recommended: Use 2-8 processes for optimal performance
+
 ## Common Options
 
 All scripts support the following options:
@@ -239,6 +302,14 @@ python plot_lcl.py out1.nc out2.nc -o lcl.png \
 # Virtual potential temperature
 python plot_theta_v.py out2.nc -o theta_v.png \
   --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
+
+# Time series at a specific location (single file)
+python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
+  -o timeseries.pdf
+
+# Time series for all files in a directory (batch mode with parallel processing)
+python plot_time_series.py /path/to/simulation/output/ 33.5 -106.5 ws-site1 \
+  --threads 4 -p timeseries_all.pdf
 ```
 
 ## Output
