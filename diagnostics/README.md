@@ -228,7 +228,7 @@ Creates time series plots at a specific lat/lon location showing:
 - `-d, --output-dir`: Output directory for batch mode (default: same as input directory)
 - `-p, --pdf`: Output PDF filename for batch mode (default: time_series_all.pdf)
 - `--locations-csv`: Path to locations.csv file (default: ../locations.csv)
-- `--threads`: Number of threads for parallel processing in batch mode (default: 1)
+- `--threads`: Number of processes for parallel processing in batch mode (default: 1)
 - `--no-cleanup`: Keep individual PNG files in batch mode
 
 **Examples:**
@@ -241,7 +241,7 @@ python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
 python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
   -p timeseries_all.pdf
 
-# Batch mode with multi-threading (4 threads)
+# Batch mode with parallel processing (4 processes)
 python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
   --threads 4 -p timeseries.pdf
 
@@ -258,11 +258,12 @@ python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
 - PBL winds (middle) are measured at half the PBL height
 - Single mode: Output is a multi-panel PDF showing all five time series
 - Batch mode: Output is a multi-page PDF with one page per file pair
-- Multi-threading significantly speeds up batch processing of multiple files:
-  - Data extraction is parallelized across threads
-  - NetCDF file opening is serialized with a lock to prevent HDF5 thread-safety issues
-  - Plot creation is serialized to avoid matplotlib thread-safety issues
-  - Recommended: Use 2-8 threads for optimal performance
+- Parallel processing significantly speeds up batch processing of multiple files:
+  - Uses **ProcessPoolExecutor** for true parallelism (separate processes)
+  - Each process has its own memory space, avoiding NetCDF/HDF5 thread-safety issues
+  - Data extraction is parallelized across processes
+  - Plot creation is serialized in the main process (matplotlib safety)
+  - Recommended: Use 2-8 processes for optimal performance
 
 ## Common Options
 
@@ -306,7 +307,7 @@ python plot_theta_v.py out2.nc -o theta_v.png \
 python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
   -o timeseries.pdf
 
-# Time series for all files in a directory (batch mode with multi-threading)
+# Time series for all files in a directory (batch mode with parallel processing)
 python plot_time_series.py /path/to/simulation/output/ 33.5 -106.5 ws-site1 \
   --threads 4 -p timeseries_all.pdf
 ```

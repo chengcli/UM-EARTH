@@ -17,13 +17,12 @@ import csv
 import glob
 import os
 import sys
-import threading
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from PIL import Image
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 # Constants
@@ -42,10 +41,6 @@ DEFAULT_BATCH_OUTPUT = 'time_series_all.pdf'
 # PDF output settings
 PDF_PAGE_SIZE = (11, 8.5)  # Letter size in inches
 PDF_DPI = 150  # DPI for PDF output
-
-# NetCDF file opening lock (NetCDF4/HDF5 is not fully thread-safe)
-# This lock serializes file opening operations while allowing parallel data processing
-_netcdf_lock = threading.Lock()
 
 
 def read_location_bounds(locations_csv, location_name):
@@ -291,10 +286,9 @@ def extract_time_series(input_file_out1, input_file_out2, lat, lon,
     dict
         Dictionary containing time series data
     """
-    # Load datasets with lock (NetCDF4/HDF5 is not fully thread-safe)
-    with _netcdf_lock:
-        ds1 = xr.open_dataset(input_file_out1)
-        ds2 = xr.open_dataset(input_file_out2)
+    # Load datasets (ProcessPoolExecutor provides process isolation)
+    ds1 = xr.open_dataset(input_file_out1)
+    ds2 = xr.open_dataset(input_file_out2)
     
     # Read location bounds
     bounds = read_location_bounds(locations_csv, location_name)
@@ -534,6 +528,47 @@ def combine_plots_to_pdf(plot_files, output_pdf):
     print(f"PDF created: {output_pdf}")
 
 
+def extract_data_for_file_pair(i, out1_file, out2_file, lat, lon, location, locations_csv, output_dir):
+    """Extract time series data for a single file pair (process-safe).
+    
+    This function is designed to run in a separate process via ProcessPoolExecutor.
+    
+    Parameters
+    ----------
+    i : int
+        File pair index
+    out1_file : str
+        Path to out1.nc file
+    out2_file : str
+        Path to out2.nc file
+    lat : float
+        Latitude
+    lon : float
+        Longitude
+    location : str
+        Location name
+    locations_csv : str
+        Path to locations.csv
+    output_dir : str
+        Output directory path
+    
+    Returns
+    -------
+    tuple
+        (success, data, output_file, basename, error_msg) where error_msg is None on success
+    """
+    basename = os.path.basename(out1_file)
+    base_name = basename.replace(".nc", "").replace("out1", "")
+    output_file = os.path.join(output_dir, f"{base_name}_timeseries.png")
+    
+    try:
+        # Extract time series data (each process has its own NetCDF/HDF5 state)
+        data = extract_time_series(out1_file, out2_file, lat, lon, location, locations_csv)
+        return (True, data, output_file, basename, None)
+    except Exception as e:
+        return (False, None, None, basename, str(e))
+
+
 def process_directory(input_dir, lat, lon, location, locations_csv='../locations.csv',
                      output_dir=None, output_pdf=DEFAULT_BATCH_OUTPUT, cleanup=True, num_threads=1):
     """
@@ -587,9 +622,6 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
     print(f"Found {len(file_pairs)} file pair(s)")
     print()
     
-    # Create a thread lock for thread-safe printing (always create for simplicity)
-    thread_lock = threading.Lock()
-    
     # Process each file pair
     plot_files = []
     
@@ -615,35 +647,17 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
                 print(f"  Error processing {basename}: {e}")
                 continue
     else:
-        # Parallel execution using ThreadPoolExecutor
-        # Separate data extraction (parallel) from plotting (serial) to avoid matplotlib thread-safety issues
+        # Parallel execution using ProcessPoolExecutor
+        # Processes have separate memory spaces, avoiding NetCDF/HDF5 and matplotlib thread-safety issues
         
-        def extract_data_for_file_pair(i, out1_file, out2_file):
-            """Extract time series data for a single file pair (thread-safe).
-            
-            Returns
-            -------
-            tuple
-                (success, data, output_file, basename, error_msg) where error_msg is None on success
-            """
-            basename = os.path.basename(out1_file)
-            base_name = basename.replace(".nc", "").replace("out1", "")
-            output_file = os.path.join(output_dir, f"{base_name}_timeseries.png")
-            
-            try:
-                # Extract time series data (thread-safe operation)
-                data = extract_time_series(out1_file, out2_file, lat, lon, location, locations_csv)
-                return (True, data, output_file, basename, None)
-            except Exception as e:
-                return (False, None, None, basename, str(e))
-        
-        # Step 1: Extract data in parallel
+        # Step 1: Extract data in parallel using separate processes
         extracted_data = []
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        with ProcessPoolExecutor(max_workers=num_threads) as executor:
             # Submit all data extraction tasks
             futures = {}
             for i, (out1_file, out2_file) in enumerate(file_pairs, 1):
-                future = executor.submit(extract_data_for_file_pair, i, out1_file, out2_file)
+                future = executor.submit(extract_data_for_file_pair, i, out1_file, out2_file, 
+                                        lat, lon, location, locations_csv, output_dir)
                 futures[future] = (i, os.path.basename(out1_file))
             
             # Collect data extraction results as they complete
@@ -653,14 +667,11 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
                     success, data, output_file, basename, error_msg = future.result()
                     if success:
                         extracted_data.append((data, output_file, basename, i))
-                        with thread_lock:
-                            print(f"  ✓ [{i}/{len(file_pairs)}] Extracted data from {basename}")
+                        print(f"  ✓ [{i}/{len(file_pairs)}] Extracted data from {basename}")
                     else:
-                        with thread_lock:
-                            print(f"  ✗ [{i}/{len(file_pairs)}] Error extracting {basename}: {error_msg}")
+                        print(f"  ✗ [{i}/{len(file_pairs)}] Error extracting {basename}: {error_msg}")
                 except Exception as exc:
-                    with thread_lock:
-                        print(f"  ✗ [{i}/{len(file_pairs)}] {basename} generated an exception: {exc}")
+                    print(f"  ✗ [{i}/{len(file_pairs)}] {basename} generated an exception: {exc}")
         
         # Step 2: Create plots serially (matplotlib is not thread-safe)
         print(f"\nCreating plots for {len(extracted_data)} successfully extracted dataset(s)...")
