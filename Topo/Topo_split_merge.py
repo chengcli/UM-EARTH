@@ -121,10 +121,15 @@ def interpolate_to_shape(topo: TopographyData, target_nlat: int, target_nlon: in
     if method not in ("linear", "cubic"):
         raise ValueError("method must be 'linear' or 'cubic'")
 
-    lat_old = np.linspace(topo.lat_bounds[0], topo.lat_bounds[1], topo.nlat)
-    lon_old = np.linspace(topo.lon_bounds[0], topo.lon_bounds[1], topo.nlon)
-    lat_new = np.linspace(topo.lat_bounds[0], topo.lat_bounds[1], target_nlat)
-    lon_new = np.linspace(topo.lon_bounds[0], topo.lon_bounds[1], target_nlon)
+    lat_min, lat_max = topo.lat_bounds  # (S, N)
+    lon_min, lon_max = topo.lon_bounds  # (W, E)
+
+    # IMPORTANT: input tif/topo.data is north-up (row 0 = North)
+    lat_old = np.linspace(lat_max, lat_min, topo.nlat, dtype=np.float32)      # N -> S (descending)
+    lon_old = np.linspace(lon_min, lon_max, topo.nlon, dtype=np.float32)      # W -> E (increasing)
+    lat_new = np.linspace(lat_max, lat_min, target_nlat, dtype=np.float32)    # N -> S (descending)
+    lon_new = np.linspace(lon_min, lon_max, target_nlon, dtype=np.float32)    # W -> E (increasing)
+
 
     interp = RegularGridInterpolator(
         (lat_old, lon_old),
@@ -332,12 +337,25 @@ def main():
         topo = interpolate_to_shape(topo, target_nlat, target_nlon, method=args.method)
 
     # save TorchScript tensors
-    topo_tensor = torch.from_numpy(topo.data)
+    # save TorchScript tensors (2D topo + explicit lat/lon axes)
+    H, W = topo.data.shape
+    lat_min, lat_max = topo.lat_bounds
+    lon_min, lon_max = topo.lon_bounds
+
+    lat = np.linspace(lat_max, lat_min, H).astype(np.float32)   # N -> S (descending)
+    lon = np.linspace(lon_min, lon_max, W).astype(np.float32)   # W -> E (increasing)
+
+    topo_tensor = torch.from_numpy(topo.data.astype(np.float32, copy=False)).contiguous()  # (H,W)
+
     tensor_map = {
-        "topography": topo_tensor.contiguous(),
-        "lat_bounds": torch.tensor(topo.lat_bounds, dtype=torch.float32),
-        "lon_bounds": torch.tensor(topo.lon_bounds, dtype=torch.float32),
+        "topography": topo_tensor,                      # (H,W)
+        "lat": torch.from_numpy(lat),                   # (H,)
+        "lon": torch.from_numpy(lon),                   # (W,)
+        "lat_bounds": torch.tensor([lat_min, lat_max], dtype=torch.float32),
+        "lon_bounds": torch.tensor([lon_min, lon_max], dtype=torch.float32),
+        "row0_is_north": torch.tensor([1], dtype=torch.int8),
     }
+
 
     out_pt = out_dir / f"{args.location_id}_refined_{factor}x.pt"
     print("Writing TorchScript:", out_pt.resolve())
