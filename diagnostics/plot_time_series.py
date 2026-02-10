@@ -37,6 +37,10 @@ MAGNUS_B = 237.7  # Magnus formula constant (degrees Celsius)
 DEFAULT_SINGLE_OUTPUT = 'time_series.pdf'
 DEFAULT_BATCH_OUTPUT = 'time_series_all.pdf'
 
+# PDF output settings
+PDF_PAGE_SIZE = (11, 8.5)  # Letter size in inches
+PDF_DPI = 150  # DPI for PDF output
+
 
 def read_location_bounds(locations_csv, location_name):
     """
@@ -500,7 +504,7 @@ def combine_plots_to_pdf(plot_files, output_pdf):
                     img = Image.open(plot_file)
                     
                     # Create figure with appropriate size
-                    fig = plt.figure(figsize=(11, 8.5))  # Letter size
+                    fig = plt.figure(figsize=PDF_PAGE_SIZE)
                     ax = fig.add_subplot(111)
                     ax.imshow(img)
                     ax.axis('off')
@@ -512,7 +516,7 @@ def combine_plots_to_pdf(plot_files, output_pdf):
                     plt.tight_layout()
                     
                     # Save to PDF
-                    pdf.savefig(fig, dpi=150, bbox_inches='tight')
+                    pdf.savefig(fig, dpi=PDF_DPI, bbox_inches='tight')
                     
                     plt.close(fig)
                     
@@ -657,12 +661,16 @@ Examples:
         
         # Determine output directory and PDF name
         if args.output.endswith('.pdf'):
+            # User specified a full path to a PDF file
             output_dir = os.path.dirname(args.output) or '.'
             output_pdf = os.path.basename(args.output)
         elif os.path.isdir(args.output):
+            # User specified an output directory
             output_dir = args.output
             output_pdf = DEFAULT_BATCH_OUTPUT
         else:
+            # Fallback: if user hasn't changed the default single-file output name,
+            # use the batch default instead
             output_dir = '.'
             output_pdf = args.output if args.output != DEFAULT_SINGLE_OUTPUT else DEFAULT_BATCH_OUTPUT
         
