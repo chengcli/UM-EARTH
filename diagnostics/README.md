@@ -228,7 +228,7 @@ Creates time series plots at a specific lat/lon location showing:
 - `-d, --output-dir`: Output directory for batch mode (default: same as input directory)
 - `-p, --pdf`: Output PDF filename for batch mode (default: time_series_all.pdf)
 - `--locations-csv`: Path to locations.csv file (default: ../locations.csv)
-- `--threads`: Number of processes for parallel processing in batch mode (default: 1)
+- `--threads`: Number of worker processes for parallel processing (default: 1, option named for backward compatibility)
 - `--no-cleanup`: Keep individual PNG files in batch mode
 
 **Examples:**

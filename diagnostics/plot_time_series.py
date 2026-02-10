@@ -593,7 +593,8 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
     cleanup : bool
         Whether to delete individual PNG files after creating PDF
     num_threads : int
-        Number of threads to use for parallel processing (default: 1 for serial)
+        Number of worker processes for parallel processing (default: 1 for serial)
+        Note: Named 'num_threads' for backward compatibility, but uses ProcessPoolExecutor
     """
     input_dir = os.path.abspath(input_dir)
     
@@ -609,7 +610,7 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
     print(f"Output directory: {output_dir}")
     print(f"Output PDF: {output_pdf_path}")
     print(f"Location: ({lat}, {lon}) - {location}")
-    print(f"Using {num_threads} thread(s) for processing")
+    print(f"Using {num_threads} worker process(es) for processing")
     print()
     
     # Find file pairs
