@@ -260,6 +260,7 @@ python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
 - Batch mode: Output is a multi-page PDF with one page per file pair
 - Multi-threading significantly speeds up batch processing of multiple files:
   - Data extraction is parallelized across threads
+  - NetCDF file opening is serialized with a lock to prevent HDF5 thread-safety issues
   - Plot creation is serialized to avoid matplotlib thread-safety issues
   - Recommended: Use 2-8 threads for optimal performance
 

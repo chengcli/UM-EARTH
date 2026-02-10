@@ -43,6 +43,10 @@ DEFAULT_BATCH_OUTPUT = 'time_series_all.pdf'
 PDF_PAGE_SIZE = (11, 8.5)  # Letter size in inches
 PDF_DPI = 150  # DPI for PDF output
 
+# NetCDF file opening lock (NetCDF4/HDF5 is not fully thread-safe)
+# This lock serializes file opening operations while allowing parallel data processing
+_netcdf_lock = threading.Lock()
+
 
 def read_location_bounds(locations_csv, location_name):
     """
@@ -287,9 +291,10 @@ def extract_time_series(input_file_out1, input_file_out2, lat, lon,
     dict
         Dictionary containing time series data
     """
-    # Load datasets
-    ds1 = xr.open_dataset(input_file_out1)
-    ds2 = xr.open_dataset(input_file_out2)
+    # Load datasets with lock (NetCDF4/HDF5 is not fully thread-safe)
+    with _netcdf_lock:
+        ds1 = xr.open_dataset(input_file_out1)
+        ds2 = xr.open_dataset(input_file_out2)
     
     # Read location bounds
     bounds = read_location_bounds(locations_csv, location_name)
