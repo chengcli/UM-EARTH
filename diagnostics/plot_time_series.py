@@ -659,13 +659,13 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
         
         # Step 2: Create plots serially (matplotlib is not thread-safe)
         print(f"\nCreating plots for {len(extracted_data)} successfully extracted dataset(s)...")
-        for data, output_file, basename, i in extracted_data:
+        for plot_idx, (data, output_file, basename, original_idx) in enumerate(extracted_data, 1):
             try:
                 plot_time_series(data, output_file, lat, lon)
                 plot_files.append(output_file)
-                print(f"  ✓ [{i}/{len(file_pairs)}] Created plot for {basename}")
+                print(f"  ✓ [{plot_idx}/{len(extracted_data)}] Created plot for {basename}")
             except Exception as e:
-                print(f"  ✗ [{i}/{len(file_pairs)}] Error creating plot for {basename}: {e}")
+                print(f"  ✗ [{plot_idx}/{len(extracted_data)}] Error creating plot for {basename}: {e}")
                 continue
     
     print()
