@@ -258,7 +258,10 @@ python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
 - PBL winds (middle) are measured at half the PBL height
 - Single mode: Output is a multi-panel PDF showing all five time series
 - Batch mode: Output is a multi-page PDF with one page per file pair
-- Multi-threading significantly speeds up batch processing of multiple files
+- Multi-threading significantly speeds up batch processing of multiple files:
+  - Data extraction is parallelized across threads
+  - Plot creation is serialized to avoid matplotlib thread-safety issues
+  - Recommended: Use 2-8 threads for optimal performance
 
 ## Common Options
 

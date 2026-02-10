@@ -611,51 +611,62 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
                 continue
     else:
         # Parallel execution using ThreadPoolExecutor
-        def process_file_pair(i, out1_file, out2_file):
-            """Process a single file pair.
+        # Separate data extraction (parallel) from plotting (serial) to avoid matplotlib thread-safety issues
+        
+        def extract_data_for_file_pair(i, out1_file, out2_file):
+            """Extract time series data for a single file pair (thread-safe).
             
             Returns
             -------
             tuple
-                (success, output_file, basename, error_msg) where error_msg is None on success
+                (success, data, output_file, basename, error_msg) where error_msg is None on success
             """
             basename = os.path.basename(out1_file)
             base_name = basename.replace(".nc", "").replace("out1", "")
             output_file = os.path.join(output_dir, f"{base_name}_timeseries.png")
             
             try:
-                # Extract time series
+                # Extract time series data (thread-safe operation)
                 data = extract_time_series(out1_file, out2_file, lat, lon, location, locations_csv)
-                
-                # Create plot
-                plot_time_series(data, output_file, lat, lon)
-                
-                return (True, output_file, basename, None)
+                return (True, data, output_file, basename, None)
             except Exception as e:
-                return (False, None, basename, str(e))
+                return (False, None, None, basename, str(e))
         
+        # Step 1: Extract data in parallel
+        extracted_data = []
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            # Submit all tasks
+            # Submit all data extraction tasks
             futures = {}
             for i, (out1_file, out2_file) in enumerate(file_pairs, 1):
-                future = executor.submit(process_file_pair, i, out1_file, out2_file)
+                future = executor.submit(extract_data_for_file_pair, i, out1_file, out2_file)
                 futures[future] = (i, os.path.basename(out1_file))
             
-            # Collect results as they complete
+            # Collect data extraction results as they complete
             for future in as_completed(futures):
                 i, basename = futures[future]
                 try:
-                    success, output_file, basename, error_msg = future.result()
+                    success, data, output_file, basename, error_msg = future.result()
                     if success:
-                        plot_files.append(output_file)
+                        extracted_data.append((data, output_file, basename, i))
                         with thread_lock:
-                            print(f"  ✓ [{i}/{len(file_pairs)}] Completed {basename}")
+                            print(f"  ✓ [{i}/{len(file_pairs)}] Extracted data from {basename}")
                     else:
                         with thread_lock:
-                            print(f"  ✗ [{i}/{len(file_pairs)}] Error processing {basename}: {error_msg}")
+                            print(f"  ✗ [{i}/{len(file_pairs)}] Error extracting {basename}: {error_msg}")
                 except Exception as exc:
                     with thread_lock:
                         print(f"  ✗ [{i}/{len(file_pairs)}] {basename} generated an exception: {exc}")
+        
+        # Step 2: Create plots serially (matplotlib is not thread-safe)
+        print(f"\nCreating plots for {len(extracted_data)} successfully extracted dataset(s)...")
+        for data, output_file, basename, i in extracted_data:
+            try:
+                plot_time_series(data, output_file, lat, lon)
+                plot_files.append(output_file)
+                print(f"  ✓ [{i}/{len(file_pairs)}] Created plot for {basename}")
+            except Exception as e:
+                print(f"  ✗ [{i}/{len(file_pairs)}] Error creating plot for {basename}: {e}")
+                continue
     
     print()
     
