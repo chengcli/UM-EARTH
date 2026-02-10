@@ -17,11 +17,13 @@ import csv
 import glob
 import os
 import sys
+import threading
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from PIL import Image
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # Constants
@@ -527,14 +529,14 @@ def combine_plots_to_pdf(plot_files, output_pdf):
     print(f"PDF created: {output_pdf}")
 
 
-def process_directory(directory, lat, lon, location, locations_csv='../locations.csv',
-                     output_dir=None, output_pdf=DEFAULT_BATCH_OUTPUT, cleanup=True):
+def process_directory(input_dir, lat, lon, location, locations_csv='../locations.csv',
+                     output_dir=None, output_pdf=DEFAULT_BATCH_OUTPUT, cleanup=True, num_threads=1):
     """
     Process all NetCDF file pairs in a directory and combine into a PDF.
     
     Parameters
     ----------
-    directory : str
+    input_dir : str
         Directory containing NetCDF files
     lat : float
         Latitude of the location
@@ -550,54 +552,107 @@ def process_directory(directory, lat, lon, location, locations_csv='../locations
         Output PDF filename
     cleanup : bool
         Whether to delete individual PNG files after creating PDF
+    num_threads : int
+        Number of threads to use for parallel processing (default: 1 for serial)
     """
-    directory = os.path.abspath(directory)
+    input_dir = os.path.abspath(input_dir)
     
     if output_dir is None:
-        output_dir = directory
+        output_dir = input_dir
     else:
         output_dir = os.path.abspath(output_dir)
         os.makedirs(output_dir, exist_ok=True)
     
     output_pdf_path = os.path.join(output_dir, output_pdf)
     
-    print(f"Processing NetCDF files in: {directory}")
+    print(f"Processing NetCDF files in: {input_dir}")
     print(f"Output directory: {output_dir}")
     print(f"Output PDF: {output_pdf_path}")
     print(f"Location: ({lat}, {lon}) - {location}")
+    print(f"Using {num_threads} thread(s) for processing")
     print()
     
     # Find file pairs
-    file_pairs = find_netcdf_file_pairs(directory)
+    file_pairs = find_netcdf_file_pairs(input_dir)
     
     if not file_pairs:
-        print(f"Error: No matching out1/out2 file pairs found in {directory}")
+        print(f"Error: No matching out1/out2 file pairs found in {input_dir}")
         return False
     
     print(f"Found {len(file_pairs)} file pair(s)")
     print()
     
+    # Create a thread lock for thread-safe printing
+    thread_lock = threading.Lock() if num_threads > 1 else None
+    
     # Process each file pair
     plot_files = []
-    for i, (out1_file, out2_file) in enumerate(file_pairs, 1):
-        basename = os.path.basename(out1_file)
-        print(f"[{i}/{len(file_pairs)}] Processing {basename}...")
-        
-        # Generate output filename
-        base_name = basename.replace(".nc", "").replace("out1", "")
-        output_file = os.path.join(output_dir, f"{base_name}_timeseries.png")
-        
-        try:
-            # Extract time series
-            data = extract_time_series(out1_file, out2_file, lat, lon, location, locations_csv)
+    
+    if num_threads == 1:
+        # Serial execution (original behavior)
+        for i, (out1_file, out2_file) in enumerate(file_pairs, 1):
+            basename = os.path.basename(out1_file)
+            print(f"[{i}/{len(file_pairs)}] Processing {basename}...")
             
-            # Create plot
-            plot_time_series(data, output_file, lat, lon)
-            plot_files.append(output_file)
+            # Generate output filename
+            base_name = basename.replace(".nc", "").replace("out1", "")
+            output_file = os.path.join(output_dir, f"{base_name}_timeseries.png")
             
-        except Exception as e:
-            print(f"  Error processing {basename}: {e}")
-            continue
+            try:
+                # Extract time series
+                data = extract_time_series(out1_file, out2_file, lat, lon, location, locations_csv)
+                
+                # Create plot
+                plot_time_series(data, output_file, lat, lon)
+                plot_files.append(output_file)
+                
+            except Exception as e:
+                print(f"  Error processing {basename}: {e}")
+                continue
+    else:
+        # Parallel execution using ThreadPoolExecutor
+        def process_file_pair(pair_info):
+            """Process a single file pair."""
+            i, out1_file, out2_file = pair_info
+            basename = os.path.basename(out1_file)
+            base_name = basename.replace(".nc", "").replace("out1", "")
+            output_file = os.path.join(output_dir, f"{base_name}_timeseries.png")
+            
+            try:
+                # Extract time series
+                data = extract_time_series(out1_file, out2_file, lat, lon, location, locations_csv)
+                
+                # Create plot
+                plot_time_series(data, output_file, lat, lon)
+                
+                return (True, output_file, basename)
+            except Exception as e:
+                return (False, None, basename, str(e))
+        
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            # Submit all tasks
+            futures = {}
+            for i, (out1_file, out2_file) in enumerate(file_pairs, 1):
+                future = executor.submit(process_file_pair, (i, out1_file, out2_file))
+                futures[future] = (i, os.path.basename(out1_file))
+            
+            # Collect results as they complete
+            for future in as_completed(futures):
+                i, basename = futures[future]
+                try:
+                    result = future.result()
+                    if result[0]:  # success
+                        _, output_file, basename = result
+                        plot_files.append(output_file)
+                        with thread_lock:
+                            print(f"  ✓ [{i}/{len(file_pairs)}] Completed {basename}")
+                    else:  # failed
+                        _, _, basename, error = result
+                        with thread_lock:
+                            print(f"  ✗ [{i}/{len(file_pairs)}] Error processing {basename}: {error}")
+                except Exception as exc:
+                    with thread_lock:
+                        print(f"  ✗ [{i}/{len(file_pairs)}] {basename} generated an exception: {exc}")
     
     print()
     
@@ -630,8 +685,11 @@ Examples:
   # Single file pair
   %(prog)s out1.nc out2.nc 33.5 -106.5 ws-site1 -o timeseries.pdf
   
-  # Process all files in a directory
-  %(prog)s /path/to/data/ 33.5 -106.5 ws-site1 --batch -o output_dir/
+  # Process all files in a directory (batch mode)
+  %(prog)s /path/to/data/ 33.5 -106.5 ws-site1 -d output_dir/ -p timeseries_all.pdf
+  
+  # Process directory with multi-threading
+  %(prog)s /path/to/data/ 33.5 -106.5 ws-site1 --threads 4 -p timeseries.pdf
         """
     )
     parser.add_argument('input_file_out1', 
@@ -642,44 +700,42 @@ Examples:
     parser.add_argument('lon', type=float, help='Longitude of the location')
     parser.add_argument('location', help='Location name (from locations.csv)')
     parser.add_argument('-o', '--output', default=DEFAULT_SINGLE_OUTPUT,
-                       help=f'Output plot file (PDF or PNG for single mode, directory or PDF name for batch mode, default: {DEFAULT_SINGLE_OUTPUT})')
+                       help=f'Output plot file for single mode (default: {DEFAULT_SINGLE_OUTPUT})')
+    parser.add_argument('-d', '--output-dir', 
+                       help='Output directory for batch mode (default: same as input directory)')
+    parser.add_argument('-p', '--pdf',
+                       help=f'Output PDF filename for batch mode (default: {DEFAULT_BATCH_OUTPUT})')
     parser.add_argument('--locations-csv', default='../locations.csv',
                        help='Path to locations.csv file (default: ../locations.csv)')
-    parser.add_argument('--batch', action='store_true',
-                       help='Process all NetCDF file pairs in the input directory')
+    parser.add_argument('--threads', type=int, default=1,
+                       help='Number of threads for parallel processing in batch mode (default: 1)')
     parser.add_argument('--no-cleanup', action='store_true',
-                       help='Keep individual PNG files (only for batch mode)')
+                       help='Keep individual PNG files in batch mode')
     
     args = parser.parse_args()
     
-    if args.batch:
+    # Determine if this is batch mode (directory) or single file mode
+    is_directory = os.path.isdir(args.input_file_out1)
+    
+    if is_directory:
         # Batch mode: process directory
-        directory = args.input_file_out1
-        if not os.path.isdir(directory):
-            print(f"Error: {directory} is not a directory")
+        input_dir = args.input_file_out1
+        
+        # Validate threads parameter
+        if args.threads < 1:
+            print(f"Error: Number of threads must be at least 1")
             return 1
         
-        # Determine output directory and PDF name
-        if args.output.endswith('.pdf'):
-            # User specified a full path to a PDF file
-            output_dir = os.path.dirname(args.output) or '.'
-            output_pdf = os.path.basename(args.output)
-        elif os.path.isdir(args.output):
-            # User specified an output directory
-            output_dir = args.output
-            output_pdf = DEFAULT_BATCH_OUTPUT
-        else:
-            # Fallback: if user hasn't changed the default single-file output name,
-            # use the batch default instead
-            output_dir = '.'
-            output_pdf = args.output if args.output != DEFAULT_SINGLE_OUTPUT else DEFAULT_BATCH_OUTPUT
+        # Determine output PDF name
+        output_pdf = args.pdf if args.pdf else DEFAULT_BATCH_OUTPUT
         
         success = process_directory(
-            directory, args.lat, args.lon, args.location,
+            input_dir, args.lat, args.lon, args.location,
             locations_csv=args.locations_csv,
-            output_dir=output_dir,
+            output_dir=args.output_dir,
             output_pdf=output_pdf,
-            cleanup=not args.no_cleanup
+            cleanup=not args.no_cleanup,
+            num_threads=args.threads
         )
         
         if success:

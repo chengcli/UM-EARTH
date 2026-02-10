@@ -210,7 +210,7 @@ python plot_time_series.py <out1.nc> <out2.nc> <lat> <lon> <location_name> \
 
 # Batch mode: process all files in a directory
 python plot_time_series.py <directory> <lat> <lon> <location_name> \
-  --batch -o time_series_all.pdf [--no-cleanup]
+  -d <output_dir> -p time_series_all.pdf [--threads N] [--no-cleanup]
 ```
 
 Creates time series plots at a specific lat/lon location showing:
@@ -224,9 +224,12 @@ Creates time series plots at a specific lat/lon location showing:
 - `lat`: Latitude of the location (decimal degrees)
 - `lon`: Longitude of the location (decimal degrees, negative for West)
 - `location_name`: Name of the location from locations.csv (e.g., 'ws-site1', 'ann-arbor')
+- `-o, --output`: Output file for single mode (default: time_series.pdf)
+- `-d, --output-dir`: Output directory for batch mode (default: same as input directory)
+- `-p, --pdf`: Output PDF filename for batch mode (default: time_series_all.pdf)
 - `--locations-csv`: Path to locations.csv file (default: ../locations.csv)
-- `--batch`: Process all NetCDF file pairs in the input directory
-- `--no-cleanup`: Keep individual PNG files (only for batch mode)
+- `--threads`: Number of threads for parallel processing in batch mode (default: 1)
+- `--no-cleanup`: Keep individual PNG files in batch mode
 
 **Examples:**
 ```bash
@@ -234,13 +237,17 @@ Creates time series plots at a specific lat/lon location showing:
 python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
   -o timeseries_ws_site1.pdf
 
-# Batch mode: Process all files in a directory
+# Batch mode: Process all files in a directory (serial)
 python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
-  --batch -o timeseries_all.pdf
+  -p timeseries_all.pdf
 
-# Batch mode: Keep individual PNG files
+# Batch mode with multi-threading (4 threads)
 python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
-  --batch -o output_dir/timeseries.pdf --no-cleanup
+  --threads 4 -p timeseries.pdf
+
+# Batch mode: Custom output directory and keep PNG files
+python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
+  -d output_dir/ -p timeseries.pdf --no-cleanup
 ```
 
 **Notes:**
@@ -251,6 +258,7 @@ python plot_time_series.py /path/to/data/ 33.5 -106.5 ws-site1 \
 - PBL winds (middle) are measured at half the PBL height
 - Single mode: Output is a multi-panel PDF showing all five time series
 - Batch mode: Output is a multi-page PDF with one page per file pair
+- Multi-threading significantly speeds up batch processing of multiple files
 
 ## Common Options
 
@@ -294,9 +302,9 @@ python plot_theta_v.py out2.nc -o theta_v.png \
 python plot_time_series.py out1.nc out2.nc 33.5 -106.5 ws-site1 \
   -o timeseries.pdf
 
-# Time series for all files in a directory (batch mode)
+# Time series for all files in a directory (batch mode with multi-threading)
 python plot_time_series.py /path/to/simulation/output/ 33.5 -106.5 ws-site1 \
-  --batch -o timeseries_all.pdf
+  --threads 4 -p timeseries_all.pdf
 ```
 
 ## Output
