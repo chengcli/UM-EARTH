@@ -16,6 +16,7 @@ import argparse
 import csv
 import glob
 import os
+import sys
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
@@ -31,6 +32,10 @@ ESPY_CONSTANT = 125.0  # meters per degree Celsius in simplified LCL calculation
 PBL_THETA_THRESHOLD = 0.5  # K - potential temperature threshold for PBL detection
 MAGNUS_A = 17.27  # Magnus formula constant (dimensionless)
 MAGNUS_B = 237.7  # Magnus formula constant (degrees Celsius)
+
+# Default output filenames
+DEFAULT_SINGLE_OUTPUT = 'time_series.pdf'
+DEFAULT_BATCH_OUTPUT = 'time_series_all.pdf'
 
 
 def read_location_bounds(locations_csv, location_name):
@@ -519,7 +524,7 @@ def combine_plots_to_pdf(plot_files, output_pdf):
 
 
 def process_directory(directory, lat, lon, location, locations_csv='../locations.csv',
-                     output_dir=None, output_pdf='time_series_all.pdf', cleanup=True):
+                     output_dir=None, output_pdf=DEFAULT_BATCH_OUTPUT, cleanup=True):
     """
     Process all NetCDF file pairs in a directory and combine into a PDF.
     
@@ -632,8 +637,8 @@ Examples:
     parser.add_argument('lat', type=float, help='Latitude of the location')
     parser.add_argument('lon', type=float, help='Longitude of the location')
     parser.add_argument('location', help='Location name (from locations.csv)')
-    parser.add_argument('-o', '--output', default='time_series.pdf',
-                       help='Output plot file (PDF or PNG for single mode, directory or PDF name for batch mode)')
+    parser.add_argument('-o', '--output', default=DEFAULT_SINGLE_OUTPUT,
+                       help=f'Output plot file (PDF or PNG for single mode, directory or PDF name for batch mode, default: {DEFAULT_SINGLE_OUTPUT})')
     parser.add_argument('--locations-csv', default='../locations.csv',
                        help='Path to locations.csv file (default: ../locations.csv)')
     parser.add_argument('--batch', action='store_true',
@@ -656,10 +661,10 @@ Examples:
             output_pdf = os.path.basename(args.output)
         elif os.path.isdir(args.output):
             output_dir = args.output
-            output_pdf = 'time_series_all.pdf'
+            output_pdf = DEFAULT_BATCH_OUTPUT
         else:
             output_dir = '.'
-            output_pdf = args.output if args.output != 'time_series.pdf' else 'time_series_all.pdf'
+            output_pdf = args.output if args.output != DEFAULT_SINGLE_OUTPUT else DEFAULT_BATCH_OUTPUT
         
         success = process_directory(
             directory, args.lat, args.lon, args.location,
@@ -696,5 +701,4 @@ Examples:
 
 
 if __name__ == '__main__':
-    import sys
     sys.exit(main())
