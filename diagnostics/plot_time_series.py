@@ -582,8 +582,8 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
     print(f"Found {len(file_pairs)} file pair(s)")
     print()
     
-    # Create a thread lock for thread-safe printing
-    thread_lock = threading.Lock() if num_threads > 1 else None
+    # Create a thread lock for thread-safe printing (always create for simplicity)
+    thread_lock = threading.Lock()
     
     # Process each file pair
     plot_files = []
@@ -611,9 +611,14 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
                 continue
     else:
         # Parallel execution using ThreadPoolExecutor
-        def process_file_pair(pair_info):
-            """Process a single file pair."""
-            i, out1_file, out2_file = pair_info
+        def process_file_pair(i, out1_file, out2_file):
+            """Process a single file pair.
+            
+            Returns
+            -------
+            tuple
+                (success, output_file, basename, error_msg) where error_msg is None on success
+            """
             basename = os.path.basename(out1_file)
             base_name = basename.replace(".nc", "").replace("out1", "")
             output_file = os.path.join(output_dir, f"{base_name}_timeseries.png")
@@ -625,7 +630,7 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
                 # Create plot
                 plot_time_series(data, output_file, lat, lon)
                 
-                return (True, output_file, basename)
+                return (True, output_file, basename, None)
             except Exception as e:
                 return (False, None, basename, str(e))
         
@@ -633,23 +638,21 @@ def process_directory(input_dir, lat, lon, location, locations_csv='../locations
             # Submit all tasks
             futures = {}
             for i, (out1_file, out2_file) in enumerate(file_pairs, 1):
-                future = executor.submit(process_file_pair, (i, out1_file, out2_file))
+                future = executor.submit(process_file_pair, i, out1_file, out2_file)
                 futures[future] = (i, os.path.basename(out1_file))
             
             # Collect results as they complete
             for future in as_completed(futures):
                 i, basename = futures[future]
                 try:
-                    result = future.result()
-                    if result[0]:  # success
-                        _, output_file, basename = result
+                    success, output_file, basename, error_msg = future.result()
+                    if success:
                         plot_files.append(output_file)
                         with thread_lock:
                             print(f"  ✓ [{i}/{len(file_pairs)}] Completed {basename}")
-                    else:  # failed
-                        _, _, basename, error = result
+                    else:
                         with thread_lock:
-                            print(f"  ✗ [{i}/{len(file_pairs)}] Error processing {basename}: {error}")
+                            print(f"  ✗ [{i}/{len(file_pairs)}] Error processing {basename}: {error_msg}")
                 except Exception as exc:
                     with thread_lock:
                         print(f"  ✗ [{i}/{len(file_pairs)}] {basename} generated an exception: {exc}")
