@@ -68,7 +68,7 @@ def parse_args():
     ap.add_argument("--ny", type=int, default=60, help="grid size in y")
 
     ap.add_argument("--dt", type=float, default=60.0, help="time step [s]")
-    ap.add_argument("--t_end", type=float, default=64800.0, help="integration length [s]")
+    ap.add_argument("--t_end", type=float, default=3 * 24 * 3600, help="integration length [s]")
 
     ap.add_argument("--Ts0", type=float, default=250.0, help="initial surface temperature [K]")
     ap.add_argument("--albedo", type=float, default=0.1, help="surface albedo [-]")
