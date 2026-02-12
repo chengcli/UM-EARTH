@@ -322,6 +322,30 @@ def main():
         for ds in datasets:
             ds.close()
 
+
+    if merged_fp.exists():
+        print("\n[SKIP] Merged DEM already exists. Reusing:", merged_fp.resolve())
+    else:
+        print("\nMerging clipped tiles...")
+
+        if not clipped_tifs:
+            print("ERROR: No clipped tiles found for merging.", file=sys.stderr)
+            sys.exit(1)
+
+        datasets = [rasterio.open(str(p)) for p in clipped_tifs]
+        mosaic, out_transform = merge(datasets)
+
+        out_profile = datasets[0].profile.copy()
+        out_profile.update(
+            height=mosaic.shape[1],
+            width=mosaic.shape[2],
+            transform=out_transform,
+            count=1,
+        )
+
+        for ds in datasets:
+            ds.close()
+
         with rasterio.open(merged_fp, "w", **out_profile) as dst:
             dst.write(mosaic)
 
