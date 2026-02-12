@@ -322,6 +322,30 @@ def main():
         for ds in datasets:
             ds.close()
 
+
+    if merged_fp.exists():
+        print("\n[SKIP] Merged DEM already exists. Reusing:", merged_fp.resolve())
+    else:
+        print("\nMerging clipped tiles...")
+
+        if not clipped_tifs:
+            print("ERROR: No clipped tiles found for merging.", file=sys.stderr)
+            sys.exit(1)
+
+        datasets = [rasterio.open(str(p)) for p in clipped_tifs]
+        mosaic, out_transform = merge(datasets)
+
+        out_profile = datasets[0].profile.copy()
+        out_profile.update(
+            height=mosaic.shape[1],
+            width=mosaic.shape[2],
+            transform=out_transform,
+            count=1,
+        )
+
+        for ds in datasets:
+            ds.close()
+
         with rasterio.open(merged_fp, "w", **out_profile) as dst:
             dst.write(mosaic)
 
@@ -405,13 +429,21 @@ def main():
         print("Saved coarse-mean GeoTIFF:", out_tif.resolve())
 
     
-    # 5 Save coarse-mean as TorchScript .pt for model ingestion
-    topo_tensor = torch.from_numpy(cell_mean_northup) # (latitude, longitude)
+
+    # 5 Save coarse-mean as TorchScript .pt (north-up)
+    # Convention: row 0 = North, latitude is descending (N -> S)
+    topo_northup = cell_mean_northup.astype(np.float32)
+
+    lat = np.linspace(lat_max, lat_min, ny).astype(np.float32)  # descending: N -> S
+    lon = np.linspace(lon_min, lon_max, nx).astype(np.float32)  # increasing: W -> E
 
     tensor_map = {
-        "topography": topo_tensor,
+        "topography": torch.from_numpy(topo_northup),            # (ny, nx)
+        "lat": torch.from_numpy(lat),                            # (ny,)
+        "lon": torch.from_numpy(lon),                            # (nx,)
         "lat_bounds": torch.tensor([lat_min, lat_max], dtype=torch.float32),
         "lon_bounds": torch.tensor([lon_min, lon_max], dtype=torch.float32),
+        "row0_is_north": torch.tensor([1], dtype=torch.int8),
     }
 
     out_pt = save_dir / f"{args.location_id}_topo_{nx}x{ny}_mean.pt"
@@ -419,7 +451,10 @@ def main():
     save_tensors(tensor_map, str(out_pt))
 
     print("Saved:", out_pt.resolve())
-    print("topography shape:", tuple(topo_tensor.shape), "dtype:", topo_tensor.dtype)
+    print("topography shape:", tuple(topo_northup.shape), "dtype:", topo_northup.dtype)
+    print("lat first/last:", float(lat[0]), float(lat[-1]))  # should be lat_max -> lat_min
+    print("lon first/last:", float(lon[0]), float(lon[-1]))  # should be lon_min -> lon_max
+
 
 
 if __name__ == "__main__":
