@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .configuration import ConfigOptions, default_output_path, render_config
+from .frigate_pipeline import DEFAULT_WORKSPACE_ROOT, run_frigate_prepare
 from .regions import load_region, load_regions_from_csv
 
 
@@ -61,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_prepare.add_argument("--timeout", type=int, default=3600)
     init_prepare.add_argument("--nX", type=int, default=1)
     init_prepare.add_argument("--nY", type=int, default=1)
+    init_prepare.add_argument("--times", nargs="+")
     init_prepare.set_defaults(handler=handle_init_prepare)
 
     forecast_p = sub.add_parser("forecast", help="Run the snapy forecast")
@@ -96,6 +98,15 @@ def build_parser() -> argparse.ArgumentParser:
     pipe_run.add_argument("--nX", type=int, default=1)
     pipe_run.add_argument("--nY", type=int, default=1)
     pipe_run.set_defaults(handler=handle_pipeline_run)
+
+    frigate_prepare = pipe_sub.add_parser("frigate-prepare", help="Prepare a FRIGATE run from a KML and date")
+    frigate_prepare.add_argument("--region-kml", required=True)
+    frigate_prepare.add_argument("--date", required=True)
+    frigate_prepare.add_argument("--location-id")
+    frigate_prepare.add_argument("--workspace-root", default=str(DEFAULT_WORKSPACE_ROOT))
+    frigate_prepare.add_argument("--skip-download", action="store_true")
+    frigate_prepare.add_argument("--timeout", type=int, default=3600)
+    frigate_prepare.set_defaults(handler=handle_pipeline_frigate_prepare)
     return parser
 
 
@@ -190,6 +201,8 @@ def handle_init_prepare(args: argparse.Namespace) -> int:
     cmd.extend(["--config", args.config, "--output-base", args.output_base])
     cmd.extend(["--start-from", str(args.start_from), "--stop-after", str(args.stop_after)])
     cmd.extend(["--timeout", str(args.timeout), "--nX", str(args.nX), "--nY", str(args.nY)])
+    if args.times:
+        cmd.extend(["--times", *args.times])
     cmd.extend(["--locations-file", args.locations_file])
     return _run_python(script, cmd)
 
@@ -264,6 +277,7 @@ def handle_pipeline_run(args: argparse.Namespace) -> int:
             timeout=args.timeout,
             nX=args.nX,
             nY=args.nY,
+            times=None,
         )
     )
     if init_rc or args.skip_forecast:
@@ -276,6 +290,19 @@ def handle_pipeline_run(args: argparse.Namespace) -> int:
             output_dir=str(Path.cwd() / "output"),
         )
     )
+
+
+def handle_pipeline_frigate_prepare(args: argparse.Namespace) -> int:
+    run_dir = run_frigate_prepare(
+        region_kml=args.region_kml,
+        date=args.date,
+        workspace_root=args.workspace_root,
+        location_id=args.location_id,
+        skip_download=args.skip_download,
+        timeout=args.timeout,
+    )
+    print(run_dir)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

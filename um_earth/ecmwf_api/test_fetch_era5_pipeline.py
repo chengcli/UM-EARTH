@@ -258,6 +258,30 @@ class TestCalculateLatLonLimits(unittest.TestCase):
         # Check ordering
         self.assertLess(latmin, latmax)
         self.assertLess(lonmin, lonmax)
+
+
+class TestFetchERA5Data(unittest.TestCase):
+    """Test fetch command construction."""
+
+    @patch("fetch_era5_pipeline.subprocess.run")
+    def test_fetch_era5_data_passes_times(self, mock_run):
+        fetch_era5_pipeline.fetch_era5_data(
+            30.0,
+            31.0,
+            -110.0,
+            -109.0,
+            "2024-01-01",
+            "2024-01-01",
+            "/tmp/out",
+            times=["00:00", "06:00", "12:00", "18:00"],
+        )
+
+        self.assertEqual(mock_run.call_count, 2)
+        first_cmd = mock_run.call_args_list[0].args[0]
+        second_cmd = mock_run.call_args_list[1].args[0]
+        self.assertIn("--times", first_cmd)
+        self.assertEqual(first_cmd[-4:], ["00:00", "06:00", "12:00", "18:00"])
+        self.assertIn("--times", second_cmd)
         
         # Check that center is within bounds
         self.assertLess(latmin, 30.0)

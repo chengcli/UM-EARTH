@@ -317,6 +317,12 @@ def main():
         default=3600,
         help="Timeout for each step in seconds (default: 3600)"
     )
+    parser.add_argument(
+        "--times",
+        nargs="+",
+        default=None,
+        help="Specific UTC times to fetch in Step 1 (for example: 00:00 06:00 12:00 18:00)"
+    )
     
     parser.add_argument(
         '--locations-file',
@@ -412,6 +418,8 @@ def main():
     print(f"Timeout per step: {args.timeout} seconds ({args.timeout/60:.1f} minutes)")
     print(f"Will start from: Step {args.start_from}")
     print(f"Will stop after: Step {args.stop_after}")
+    if args.times:
+        print(f"Requested ERA5 times: {', '.join(args.times)}")
     print()
 
     # Check credentials before starting
@@ -432,7 +440,8 @@ def main():
         step1_success = run_step_with_timeout(
             "Step 1: Fetch ERA5 Data",
             ["python3", str(fetch_script), str(config_path), 
-             "--output-base", str(output_base)],
+             "--output-base", str(output_base),
+             *(["--times", *args.times] if args.times else [])],
             timeout_seconds=args.timeout
         )
         

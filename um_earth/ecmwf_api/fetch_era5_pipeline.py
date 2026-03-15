@@ -382,7 +382,8 @@ def generate_output_dirname(latmin: float, latmax: float,
 
 
 def fetch_era5_data(latmin: float, latmax: float, lonmin: float, lonmax: float,
-                   start_date: str, end_date: str, output_dir: str) -> None:
+                   start_date: str, end_date: str, output_dir: str,
+                   times: list[str] | None = None) -> None:
     """
     Fetch ERA5 hourly data using existing fetch scripts.
     
@@ -410,6 +411,8 @@ def fetch_era5_data(latmin: float, latmax: float, lonmin: float, lonmax: float,
         '--end-date', end_date,
         '--output', output_dir
     ]
+    if times:
+        densities_cmd.extend(['--times', *times])
     
     try:
         result = subprocess.run(densities_cmd, check=True, capture_output=False, text=True)
@@ -434,6 +437,8 @@ def fetch_era5_data(latmin: float, latmax: float, lonmin: float, lonmax: float,
         '--end-date', end_date,
         '--output', output_dir
     ]
+    if times:
+        dynamics_cmd.extend(['--times', *times])
     
     try:
         result = subprocess.run(dynamics_cmd, check=True, capture_output=False, text=True)
@@ -468,6 +473,8 @@ The script will:
                        help='Path to YAML configuration file')
     parser.add_argument('--output-base', type=str, default='.',
                        help='Base directory for output (default: current directory)')
+    parser.add_argument('--times', nargs='+',
+                       help='Specific UTC times to fetch (for example: 00:00 06:00 12:00 18:00)')
     
     args = parser.parse_args()
     
@@ -497,6 +504,8 @@ The script will:
         integration = extract_integration_info(config)
         print(f"  Start date: {integration['start_date']}")
         print(f"  End date: {integration['end_date']}")
+        if args.times:
+            print(f"  Times: {', '.join(args.times)}")
         
         # Calculate lat-lon limits
         print("\nCalculating lat-lon region limits...")
@@ -532,7 +541,8 @@ The script will:
         fetch_era5_data(
             latmin_buf, latmax_buf, lonmin_buf, lonmax_buf,
             integration['start_date'], integration['end_date'],
-            output_dir
+            output_dir,
+            times=args.times,
         )
         
         print("\n" + "="*70)
