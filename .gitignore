@@ -40,3 +40,8 @@ Topo/Data
 # slurm
 *.err
 *.out
+
+# packaging
+build/
+dist/
+*.egg-info/

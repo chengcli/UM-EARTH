@@ -34,13 +34,13 @@ import rasterio
 from scipy.interpolate import RegularGridInterpolator
 import torch
 
-# Path anchors (GitHub-safe)
-SCRIPT_DIR = Path(__file__).resolve().parent      # e.g., UM-EARTH/Topo
-PROJECT_ROOT = SCRIPT_DIR.parent                  # e.g., UM-EARTH 
+# Path anchors
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
 DEFAULT_LOCATIONS = PROJECT_ROOT / "locations.csv"
-DEFAULT_BASE_DIR  = PROJECT_ROOT / "Topo" / "Data" / "Raw"
-DEFAULT_OUT_DIR   = PROJECT_ROOT / "Topo" / "Data" / "Split"
+DEFAULT_BASE_DIR  = PROJECT_ROOT / "data" / "topography" / "raw"
+DEFAULT_OUT_DIR   = PROJECT_ROOT / "data" / "topography" / "split"
 
 
 # TorchScript tensor saver (your preferred format)
@@ -210,14 +210,14 @@ def parse_args():
         "--base-dir",
         type=Path,
         default=DEFAULT_BASE_DIR,
-        help="Directory containing <location>/<location>_merged_10m.tif (default: UM-EARTH/Topo/Data/Raw)"
+        help="Directory containing <location>/<location>_merged_10m.tif (default: UM-EARTH/data/topography/raw)"
     )
 
     ap.add_argument(
         "--out-dir",
         type=Path,
         default=DEFAULT_OUT_DIR,
-        help="Output directory for TorchScript .pt (default: UM-EARTH/Topo/Data/Split)"
+        help="Output directory for TorchScript .pt (default: UM-EARTH/data/topography/split)"
     )
 
     ap.add_argument(

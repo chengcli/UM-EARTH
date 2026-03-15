@@ -4,7 +4,7 @@ This directory contains an API for accessing and analyzing Earth's weather and c
 
 ## Installation
 
-For accessing the ECMWF Climate Data Store (CDS), read the instructions at `ecmwf_api/README_ECMWF.md`.
+For accessing the ECMWF Climate Data Store (CDS), read the instructions at `um_earth/ecmwf_api/README_ECMWF.md`.
 
 ## Regional Weather Prediction Pipelines
 
@@ -24,8 +24,8 @@ Complete weather data pipeline for Ann Arbor, Michigan (November 2025).
 
 ### ECMWF Data Curation
 General-purpose ECMWF ERA5 data access and processing tools.
-- **Location**: `ecmwf_api/`
-- **Documentation**: See `ecmwf_api/README_ECMWF.md`
+- **Location**: `um_earth/ecmwf_api/`
+- **Documentation**: See `um_earth/ecmwf_api/README_ECMWF.md`
 - **Complete 4-step pipeline**: Fetch, Calculate Density, Regrid, Compute Pressure
 
 ## Configuration files

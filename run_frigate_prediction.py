@@ -2,6 +2,7 @@ import torch
 import yaml
 import argparse
 import time
+from pathlib import Path
 import torch.nn.functional as F
 from snapy import MeshBlockOptions, MeshBlock
 from snapy import kIDN, kIPR, kICY, kIV1, kIV2, kIV3
@@ -47,7 +48,7 @@ def create_block(config_file: str):
     block.set_user_output_func(call_user_output)
 
     # thermo model
-    thermo_y = block.module("hydro.eos.thermo")
+    thermo_y = block.hydro.module("eos.thermo")
     thermo_x = ThermoX(thermo_y.options)
     thermo_x.to(device)
 
@@ -60,10 +61,16 @@ def create_block(config_file: str):
 
 def load_ecmwf_input(input_dir: str, index: int = 0,
                      device: torch.device = torch.device("cpu")):
-    RESTART_FILE = f"{input_dir}/input.part"
-    TOPO_FILE = f"{input_dir}/ws-site1_{index}.pt"
+    input_path = Path(input_dir)
+    restart_file = input_path / "input.part"
+    topo_matches = sorted(input_path.glob(f"*_{index}.pt"))
+    if not topo_matches:
+        raise FileNotFoundError(
+            f"Could not find topography tensor matching '*_{index}.pt' in {input_path}"
+        )
+    topo_file = topo_matches[0]
 
-    module = torch.jit.load(RESTART_FILE)
+    module = torch.jit.load(str(restart_file))
     block_vars = {}
     for name, data in module.named_buffers(recurse=True):
         block_vars[name] = data[index].to(device).to(torch.double)
@@ -72,7 +79,7 @@ def load_ecmwf_input(input_dir: str, index: int = 0,
         block_vars[name] = data[index].to(device).to(torch.double)
 
     aux_vars = {}
-    module = torch.jit.load(TOPO_FILE)
+    module = torch.jit.load(str(topo_file))
     for name, data in module.named_buffers(recurse=True):
         aux_vars[name] = data.to(device).to(torch.double)
     for name, data in module.named_parameters(recurse=True):
@@ -82,7 +89,7 @@ def load_ecmwf_input(input_dir: str, index: int = 0,
 def equilibrate_initial_fields(block: MeshBlock,
                                thermo_x: ThermoX,
                                block_vars: dict[str, torch.Tensor]):
-    thermo_y = block.module("hydro.eos.thermo")
+    thermo_y = block.hydro.module("eos.thermo")
 
     hydro_w = block_vars["hydro_w"]
     dens = hydro_w[kIDN]
@@ -124,8 +131,8 @@ def run_simulation(block: MeshBlock,
                    block_vars: dict[str, torch.Tensor],
                    current_time: float,
                    duration: float):
-    eos = block.module("hydro.eos")
-    thermo_y = block.module("hydro.eos.thermo")
+    eos = block.hydro.module("eos")
+    thermo_y = block.hydro.module("eos.thermo")
     block.options.intg().tlim(current_time + duration)
 
     while not block.intg.stop(block.inc_cycle(), current_time):
@@ -254,7 +261,7 @@ def refine_simulation(block: MeshBlock,
     block.set_user_output_func(call_user_output)
 
     # thermo model
-    thermo_y = block.module("hydro.eos.thermo")
+    thermo_y = block.hydro.module("eos.thermo")
     thermo_x = ThermoX(thermo_y.options)
     thermo_x.to(device)
 
@@ -268,14 +275,14 @@ def refine_simulation(block: MeshBlock,
     block_vars["hydro_u"] = conservative_refine(block_vars["hydro_u"], nghost)
 
     # topography
-    coord = block.module("coord")
+    coord = block.hydro.module("coord")
     x3v, x2v, x1v = torch.meshgrid(
         coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
     )
     block_vars["topo"] = x1v < topo
 
     # eos model
-    eos = block.module("hydro.eos")
+    eos = block.hydro.module("eos")
     block_vars["hydro_w"] = eos.compute("U->W", (block_vars["hydro_u"],))
     block_vars, _ = block.initialize(block_vars)
 
@@ -307,7 +314,7 @@ def main():
 
     # load and compute auxiliary variables
     ng = 3
-    eos = block.module("hydro.eos")
+    eos = block.hydro.module("eos")
     for n in range(1, 4):
         bvar, avar = load_ecmwf_input(args.input_dir, index=n, device=device)
         aux_vars[f"hydro_u/{n}"] = eos.compute("W->U", (bvar["hydro_w"],))
@@ -322,7 +329,7 @@ def main():
 
     # initialize model
     block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
-    coord = block.module("coord")
+    coord = block.hydro.module("coord")
     x3v, x2v, x1v = torch.meshgrid(
         coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
     )

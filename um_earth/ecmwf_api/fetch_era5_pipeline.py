@@ -34,7 +34,10 @@ from typing import Dict, Tuple
 # Add current directory to path for importing local modules
 sys.path.insert(0, os.path.dirname(__file__))
 
-from ecmwf_utils import validate_date_format
+try:
+    from .ecmwf_utils import validate_date_format
+except ImportError:
+    from ecmwf_utils import validate_date_format
 
 
 def parse_yaml_config(yaml_file: str) -> Dict:

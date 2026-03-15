@@ -29,7 +29,7 @@
 # 1. download DEM file
 #!/usr/bin/env python3
 from pathlib import Path
-import sys, io, csv
+import sys
 import argparse
 import subprocess
 import requests
@@ -42,48 +42,13 @@ from rasterio.transform import from_origin
 import math
 import torch
 
+from um_earth.regions import load_region
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent      # UM-EARTH/Topo
-PROJECT_ROOT = SCRIPT_DIR.parent                 # UM-EARTH
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DEFAULT_LOCATIONS = PROJECT_ROOT / "locations.csv"
-DEFAULT_OUT = PROJECT_ROOT / "Topo" / "Data" / "Raw"
-
-# 1.1 read locations.csv
-def load_locations(locations_file):
-    locations = {}
-
-    with open(locations_file, "r", encoding="utf-8") as f:
-        lines = [
-            line for line in f
-            if not line.strip().startswith("#") and line.strip()
-        ]
-
-    csv_data = io.StringIO("".join(lines))
-    reader = csv.DictReader(csv_data, delimiter=",", skipinitialspace=True)
-    reader.fieldnames = [h.strip() for h in reader.fieldnames]
-
-    for row in reader:
-        row = {k.strip(): v.strip() for k, v in row.items()}
-
-        latmin = float(row["Latmin"])
-        latmax = float(row["Latmax"])
-        lonmin = float(row["Lonmin"])
-        lonmax = float(row["Lonmax"])
-
-        polygon = [
-            [lonmin, latmin],
-            [lonmin, latmax],
-            [lonmax, latmax],
-            [lonmax, latmin],
-        ]
-
-        locations[row["Name"]] = {
-            "name": row["Description"],
-            "polygon": polygon,
-        }
-
-    return locations
+DEFAULT_OUT = PROJECT_ROOT / "data" / "topography" / "raw"
 
 
 def polygon_to_bbox(polygon):
@@ -107,11 +72,17 @@ def save_tensors(tensor_map: dict[str, torch.Tensor], filename: str):
 
 def parse_args():
     ap = argparse.ArgumentParser(
-        description="Download USGS 3DEP DEM using bbox from locations.csv (wget-based)"
+        description="Download USGS 3DEP DEM using either a KML region or locations.csv (wget-based)"
     )
     ap.add_argument(
         "location_id",
+        nargs="?",
         help="Location ID in locations.csv (e.g., ws-site1)"
+    )
+    ap.add_argument(
+        "--region-kml",
+        type=Path,
+        help="Path to a KML file describing the forecast region",
     )
     ap.add_argument(
        "--locations",
@@ -129,7 +100,7 @@ def parse_args():
          "--out",
         type=Path,
         default=DEFAULT_OUT,
-        help="Output directory (default: UM-EARTH/Topo/Data/Raw)"
+        help="Output directory (default: UM-EARTH/data/topography/raw)"
     
     )
 
@@ -140,16 +111,12 @@ def parse_args():
 # 1.3 BBox → TNM API → wget
 def main():
     args = parse_args()
-
-    locations = load_locations(args.locations)
-
-    if args.location_id not in locations:
-        print(f"ERROR: {args.location_id} not found in locations.csv")
-        print("Available:", ", ".join(locations.keys()))
-        sys.exit(1)
-
-    info = locations[args.location_id]
-    bbox = polygon_to_bbox(info["polygon"])
+    region = load_region(
+        region_kml=args.region_kml,
+        location_id=args.location_id,
+        locations_file=args.locations,
+    )
+    bbox = polygon_to_bbox(region.polygon)
     download_bbox = (
         bbox[0], # left
         bbox[1],   # bottom
@@ -158,7 +125,7 @@ def main():
         )
     print("Locations file:", args.locations.resolve())
     print("Output dir:    ", args.out.resolve())
-    print("Location:      ", args.location_id, "-", info["name"])
+    print("Location:      ", region.region_id, "-", region.name)
     print("BBox (W,S,E,N):", bbox)
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -189,7 +156,7 @@ def main():
 
     # Download DEM tiles (optional)
 
-    save_dir = args.out / args.location_id
+    save_dir = args.out / region.region_id
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print("Save to location:", save_dir.resolve())
@@ -297,7 +264,7 @@ def main():
     # 3 Merge all clipped tiles into a single GeoTIFF
 
     # 3) Merge all clipped tiles into a single GeoTIFF
-    merged_fp = save_dir / f"{args.location_id}_merged_10m.tif"
+    merged_fp = save_dir / f"{region.region_id}_merged_10m.tif"
 
     if merged_fp.exists():
         print("\n[SKIP] Merged DEM already exists. Reusing:", merged_fp.resolve())
@@ -335,7 +302,7 @@ def main():
     lon_min, lat_min, lon_max, lat_max = bbox  # bbox = (W,S,E,N)
 
     nx = ny = 60
-    out_tif = save_dir / f"{args.location_id}_topo_{nx}x{ny}_mean.tif"
+    out_tif = save_dir / f"{region.region_id}_topo_{nx}x{ny}_mean.tif"
 
     if out_tif.exists():
         print("[SKIP] Coarse-mean DEM already exists:")
@@ -422,7 +389,7 @@ def main():
         "row0_is_north": torch.tensor([1], dtype=torch.int8),
     }
 
-    out_pt = save_dir / f"{args.location_id}_topo_{nx}x{ny}_mean.pt"
+    out_pt = save_dir / f"{region.region_id}_topo_{nx}x{ny}_mean.pt"
     print("Writing TorchScript:", out_pt.resolve())
     save_tensors(tensor_map, str(out_pt))
 
