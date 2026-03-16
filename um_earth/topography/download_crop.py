@@ -56,6 +56,14 @@ def polygon_to_bbox(polygon):
     lats = [p[1] for p in polygon]
     return (min(lons), min(lats), max(lons), max(lats))
 
+
+def find_existing_raw_tifs(save_dir: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in [*save_dir.rglob("*.tif"), *save_dir.rglob("*.tiff")]
+        if not path.name.startswith("clip_")
+    )
+
 def save_tensors(tensor_map: dict[str, torch.Tensor], filename: str):
     class TensorModule(torch.nn.Module):
         def __init__(self, tensors):
@@ -131,35 +139,40 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
 
 
-    # TNM Access API 
-
-    endpoint = "https://tnmaccess.nationalmap.gov/api/v1/products"
-    params = {
-        "datasets": "National Elevation Dataset (NED) 1/3 arc-second Current",
-        "bbox": f"{download_bbox[0]},{download_bbox[1]},{download_bbox[2]},{download_bbox[3]}",
-        "max": 200,
-    }
-
-
-    print("\nQuerying USGS TNM API...")
-    r = requests.get(endpoint, params=params, timeout=60)
-    r.raise_for_status()
-    data = r.json()
-
-    items = data.get("items", [])
-    if not items:
-        print("No DEM products returned.")
-        sys.exit(1)
-
-    print(f"Found {len(items)} DEM file(s). Starting download...\n")
-
-
-    # Download DEM tiles (optional)
-
     save_dir = args.out / region.region_id
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print("Save to location:", save_dir.resolve())
+
+    existing_raw_tifs = find_existing_raw_tifs(save_dir)
+    if args.skip_download and existing_raw_tifs:
+        print("\n[SKIP] Found existing raw tif files. Reusing them without querying USGS TNM API.")
+        items = []
+    else:
+        # TNM Access API
+
+        endpoint = "https://tnmaccess.nationalmap.gov/api/v1/products"
+        params = {
+            "datasets": "National Elevation Dataset (NED) 1/3 arc-second Current",
+            "bbox": f"{download_bbox[0]},{download_bbox[1]},{download_bbox[2]},{download_bbox[3]}",
+            "max": 200,
+        }
+
+
+        print("\nQuerying USGS TNM API...")
+        r = requests.get(endpoint, params=params, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+
+        items = data.get("items", [])
+        if not items:
+            print("No DEM products returned.")
+            sys.exit(1)
+
+        print(f"Found {len(items)} DEM file(s). Starting download...\n")
+
+
+    # Download DEM tiles (optional)
 
     if args.skip_download:
         print("\n[SKIP] Download step skipped. Using existing tif files.")

@@ -108,7 +108,7 @@ integration:
   # (Only start-date and end-date are used by the data fetching pipeline)
   type: rk3                 # Time integration method
   cfl: 0.9                  # CFL number for stability
-  implicit-scheme: 1        # Explicit time integration
+  implicit-scheme: 0        # Explicit time integration
   nlim: -1                  # No step limit
   tlim: {tlim}              # Simulation time (seconds)
   ncycle_out: 10            # Diagnostic output frequency

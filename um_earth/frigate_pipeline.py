@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from .regions import RegionDefinition, load_region
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TEMPLATE = PROJECT_ROOT / "config_template.yaml"
-DEFAULT_WORKSPACE_ROOT = PROJECT_ROOT.parent
+DEFAULT_WORKSPACE_ROOT = Path("/home/chengcli/data/2025.FRIGATE") / "runs"
 DEFAULT_MIN_DOMAIN_DEGREES = 1.5
 DEFAULT_TARGET_RESOLUTIONS_KM = (2.4, 1.2, 0.6, 0.3)
 DEFAULT_ERA5_TIMES = ("00:00", "06:00", "12:00", "18:00")
@@ -187,7 +188,10 @@ def write_config(
 
 
 def _run_python(script: Path, args: list[str]) -> None:
-    subprocess.run([sys.executable, str(script), *args], check=True)
+    env = dict(os.environ)
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(PROJECT_ROOT) if not pythonpath else str(PROJECT_ROOT) + os.pathsep + pythonpath
+    subprocess.run([sys.executable, str(script), *args], check=True, cwd=PROJECT_ROOT, env=env)
 
 
 def run_topography_download(region: RegionDefinition, raw_out_dir: Path, *, skip_download: bool = False) -> None:
@@ -312,7 +316,7 @@ def write_run_manifest(
         "region_id": region.region_id,
         "date": date,
         "run_dir": str(run_dir),
-        "config_path": str(config_path),
+        "simulation_input_path": str(config_path),
         "digest_path": str(digest_path),
         "era5_output_dir": str(era5_output_dir) if era5_output_dir else None,
         "topography_products": {label: str(path) for label, path in topography_products.items()},
@@ -343,6 +347,7 @@ def run_frigate_prepare(
     digest_path = run_dir / "region_digest.json"
     write_region_digest(digest_path, region, prepared, date=date)
 
+    # This single YAML is both the pipeline config and the simulation input.
     config_path = run_dir / f"{region.region_id}.yaml"
     write_config(config_path, region, prepared, date=date)
 

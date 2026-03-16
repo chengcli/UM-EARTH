@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +20,10 @@ DEFAULT_LOCATIONS = PROJECT_ROOT / "locations.csv"
 
 def _run_python(script: Path, args: list[str]) -> int:
     cmd = [sys.executable, str(script), *args]
-    return subprocess.run(cmd, check=False).returncode
+    env = dict(os.environ)
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(PROJECT_ROOT) if not pythonpath else str(PROJECT_ROOT) + os.pathsep + pythonpath
+    return subprocess.run(cmd, check=False, cwd=PROJECT_ROOT, env=env).returncode
 
 
 def build_parser() -> argparse.ArgumentParser:

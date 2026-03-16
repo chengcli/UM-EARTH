@@ -96,7 +96,9 @@ def test_run_frigate_prepare_creates_artifacts(tmp_path, monkeypatch):
         workspace_root=tmp_path,
     )
 
+    manifest = yaml.safe_load((run_dir / "run_manifest.yaml").read_text(encoding="utf-8"))
     assert (run_dir / "region_digest.json").exists()
     assert (run_dir / "run_manifest.yaml").exists()
     assert (run_dir / "plots" / "topography_resolutions.png").exists()
     assert (run_dir / "topography" / "products").exists()
+    assert manifest["simulation_input_path"].endswith("sacramento_valley.yaml")
