@@ -92,13 +92,13 @@ Current behavior:
 
 ### Trial Run
 
+The forecast driver can now infer the ERA5 tensor input directory, topography directory, and a default forecast output directory directly from the prepared run folder that contains `<region>.yaml`.
+
 Short CPU trial:
 
 ```bash
 env PYTHONFAULTHANDLER=1 python3 /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
   -c /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/sacramento_valley.yaml \
-  -i /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/era5/37.60N_39.40N_122.58W_120.79W/regridded_sacramento_valley_20260307_tensors \
-  -o /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_trial_v3_cpu \
   --device cpu \
   --hydrostatic-duration 10 \
   --spinup-chunk-duration 10 \
@@ -110,8 +110,6 @@ Short CUDA trial:
 ```bash
 env MASTER_PORT=29502 PYTHONFAULTHANDLER=1 python3 /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
   -c /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/sacramento_valley.yaml \
-  -i /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/era5/37.60N_39.40N_122.58W_120.79W/regridded_sacramento_valley_20260307_tensors \
-  -o /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_trial_v3_cuda \
   --device cuda \
   --hydrostatic-duration 10 \
   --spinup-chunk-duration 10 \
@@ -122,6 +120,21 @@ Notes:
 
 - Use a distinct `MASTER_PORT` if another run is already active.
 - The driver now uses `mesh.options.device_str()` as the source of truth for the mesh device after construction.
+- If `-i` is omitted, the driver uses `era5/*/regridded_*_tensors` under the config directory.
+- If `-o` is omitted, outputs go to `<run-dir>/forecast_output`.
+- `--topography-dir` is also optional and defaults to `<run-dir>/topography/products`.
+
+If you want a custom output folder name while still using inferred inputs, only override `-o`:
+
+```bash
+env MASTER_PORT=29502 PYTHONFAULTHANDLER=1 python3 /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
+  -c /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/sacramento_valley.yaml \
+  -o /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_trial_cuda \
+  --device cuda \
+  --hydrostatic-duration 10 \
+  --spinup-chunk-duration 10 \
+  --prediction-duration 20
+```
 
 ### Production Run
 
@@ -134,7 +147,6 @@ setsid bash -lc '
   exec env MASTER_PORT=29504 PYTHONFAULTHANDLER=1 \
     python3 /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
       -c /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/sacramento_valley.yaml \
-      -i /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/era5/37.60N_39.40N_122.58W_120.79W/regridded_sacramento_valley_20260307_tensors \
       -o /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_production_24h \
       --device cuda \
       --prediction-duration 86400 \

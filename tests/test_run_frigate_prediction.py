@@ -32,6 +32,27 @@ def test_resolve_restart_file_prefers_existing_part(tmp_path):
     assert module.resolve_restart_file(str(preferred)) == preferred
 
 
+def test_default_input_dir_finds_regridded_tensor_dir(tmp_path):
+    module = load_module()
+    run_dir = tmp_path / "run"
+    tensor_dir = run_dir / "era5" / "bounds" / "regridded_case_tensors"
+    tensor_dir.mkdir(parents=True)
+    config_file = run_dir / "case.yaml"
+    config_file.write_text("", encoding="utf-8")
+
+    assert module.default_input_dir(str(config_file)) == tensor_dir
+
+
+def test_default_output_dir_uses_run_local_forecast_output(tmp_path):
+    module = load_module()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    config_file = run_dir / "case.yaml"
+    config_file.write_text("", encoding="utf-8")
+
+    assert module.default_output_dir(str(config_file)) == run_dir / "forecast_output"
+
+
 def test_discover_topography_files_returns_all_stages(tmp_path):
     module = load_module()
     topo_dir = tmp_path / "products"
@@ -67,3 +88,44 @@ def test_implicit_scheme_for_refinement_factor():
     assert module.implicit_scheme_for_refinement_factor(2.0) == 1
     assert module.implicit_scheme_for_refinement_factor(4.0) == 1
     assert module.implicit_scheme_for_refinement_factor(8.0) == 1
+
+
+def test_precipitation_tracer_indices_reads_particle_species(tmp_path):
+    module = load_module()
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+species:
+  - name: dry
+  - name: H2O
+  - name: H2O(l)
+  - name: H2O(l,p)
+  - name: dust(p)
+""",
+        encoding="utf-8",
+    )
+
+    indices = module.precipitation_tracer_indices(str(config_file))
+
+    assert indices == (module.kICY + 2, module.kICY + 3)
+
+
+def test_remove_surface_precipitation_zeros_lowest_fluid_cells():
+    module = load_module()
+    hydro_w = torch.zeros((8, 2, 1, 4), dtype=torch.float64)
+    hydro_w[module.kICY + 2] = torch.tensor(
+        [[[1.0, 2.0, 3.0, 4.0]], [[5.0, 6.0, 7.0, 8.0]]], dtype=torch.float64
+    )
+    topo = torch.tensor(
+        [[[False, False, False, False]], [[True, True, False, False]]], dtype=torch.bool
+    )
+
+    updated = module.remove_surface_precipitation(
+        hydro_w, topo, (module.kICY + 2,)
+    )
+
+    expected = torch.tensor(
+        [[[0.0, 2.0, 3.0, 4.0]], [[5.0, 6.0, 0.0, 8.0]]], dtype=torch.float64
+    )
+    assert torch.equal(updated[module.kICY + 2], expected)
+    assert torch.equal(updated[module.kICY], hydro_w[module.kICY])

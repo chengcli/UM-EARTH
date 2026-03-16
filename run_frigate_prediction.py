@@ -1,5 +1,6 @@
 import argparse
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import snapy
@@ -19,6 +20,19 @@ from refine_utils import coarsen_spatial, conservative_refine, refine_spatial
 torch.set_default_dtype(torch.float64)
 
 TOPO_SEQUENCE = ("2p4km", "1p2km", "0p6km", "0p3km")
+
+
+@dataclass
+class ForecastContext:
+    mesh: Mesh
+    thermo_x: ThermoX
+    kinet: Kinetics
+    device: torch.device
+    block_vars: dict[str, torch.Tensor]
+    ecmwf_hydro_u: list[torch.Tensor]
+    stage_topography: list[dict[str, torch.Tensor]]
+    precip_indices: tuple[int, ...]
+    current_time: float = 0.0
 
 
 def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
@@ -64,6 +78,22 @@ def resolve_restart_file(input_path: str) -> Path:
     return matches[0]
 
 
+def default_output_dir(config_file: str) -> Path:
+    return infer_run_dir(config_file) / "forecast_output"
+
+
+def default_input_dir(config_file: str) -> Path:
+    run_dir = infer_run_dir(config_file)
+    matches = sorted(run_dir.glob("era5/*/regridded_*_tensors"))
+    if not matches:
+        raise FileNotFoundError(
+            f"Could not infer ERA5 tensor directory under {run_dir / 'era5'}"
+        )
+    if len(matches) > 1:
+        print_ok("Multiple tensor directories found; using", matches[0])
+    return matches[0]
+
+
 def parse_topography_label(path: Path) -> str:
     marker = "_topo_"
     if marker not in path.stem:
@@ -89,6 +119,20 @@ def discover_topography_files(topography_dir: str) -> dict[str, Path]:
 
 def default_topography_dir(config_file: str) -> Path:
     return infer_run_dir(config_file) / "topography" / "products"
+
+
+def precipitation_tracer_indices(config_file: str) -> tuple[int, ...]:
+    with open(config_file, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+
+    species = config.get("species", [])
+    explicit_species = species[1:]
+    indices = []
+    for offset, spec in enumerate(explicit_species):
+        name = str(spec.get("name", ""))
+        if "(p)" in name or ",p)" in name:
+            indices.append(kICY + offset)
+    return tuple(indices)
 
 
 def init_dist(backend: str, requested_device: str = "auto") -> torch.device:
@@ -275,7 +319,37 @@ def equilibrate_initial_fields(block: MeshBlock,
 
     return block_vars
 
+
+def surface_precipitation_mask(topo: torch.Tensor) -> torch.Tensor:
+    surface = torch.zeros_like(topo, dtype=torch.bool)
+    if topo.shape[-1] == 0:
+        return surface
+
+    surface[..., 0] = ~topo[..., 0]
+    surface[..., 1:] = (~topo[..., 1:]) & topo[..., :-1]
+    return surface
+
+
+def remove_surface_precipitation(
+    hydro_w: torch.Tensor,
+    topo: torch.Tensor,
+    precip_indices: tuple[int, ...],
+) -> torch.Tensor:
+    if not precip_indices:
+        return hydro_w
+
+    surface = surface_precipitation_mask(topo)
+    if not torch.any(surface):
+        return hydro_w
+
+    updated = hydro_w.clone()
+    for index in precip_indices:
+        updated[index] = torch.where(surface, torch.zeros_like(updated[index]), updated[index])
+    return updated
+
 def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
+                        eos,
+                        precip_indices: tuple[int, ...],
                         dt: float, 
                         tau: float = 100.,
                         cooling_rate: float = 2. / 86400.):
@@ -297,12 +371,18 @@ def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
     # surface_level = torch.zeros_like(topo)
     # surface_level[:,:,1:] = topo[:,:,:-1] - topo[:,:,1:]
 
+    updated_hydro_w = remove_surface_precipitation(w, topo, precip_indices)
+    if updated_hydro_w.data_ptr() != w.data_ptr():
+        block_vars["hydro_w"] = updated_hydro_w
+        block_vars["hydro_u"] = eos.compute("W->U", (updated_hydro_w,))
+
 def run_simulation(mesh: Mesh,
                    thermo_x: ThermoX,
                    kinet: Kinetics,
                    mesh_vars: list[dict[str, torch.Tensor]],
                    current_time: float,
-                   duration: float):
+                   duration: float,
+                   precip_indices: tuple[int, ...]):
     block0 = mesh.blocks[0]
     block_vars = mesh_vars[0]
     eos = block0.module("hydro.eos")
@@ -319,7 +399,7 @@ def run_simulation(mesh: Mesh,
 
         for stage in range(len(intg.stages)):
             mesh.forward(mesh_vars, dt, stage)
-            add_frigate_forcing(block_vars, dt)
+            add_frigate_forcing(block_vars, eos, precip_indices, dt)
 
         err = mesh.check_redo(mesh_vars)
         if err > 0:
@@ -342,6 +422,7 @@ def nudge_from_ecmwf(mesh: Mesh,
                      kinet: Kinetics,
                      block_vars: dict[str, torch.Tensor],
                      target_hydro_u: torch.Tensor,
+                     precip_indices: tuple[int, ...],
                      index: int = 0,
                      refinement_level: int = 0):
     # downsampling to interpolated ECMWF resolution
@@ -372,7 +453,9 @@ def nudge_from_ecmwf(mesh: Mesh,
     # run hydrostatic adjustment for 600 seconds after nudging
     mesh.blocks[0].options.hydro().disable_flux_x2(True)
     mesh.blocks[0].options.hydro().disable_flux_x3(True)
-    mesh_vars, _ = run_simulation(mesh, thermo_x, kinet, [block_vars], 0.0, 600.0)
+    mesh_vars, _ = run_simulation(
+        mesh, thermo_x, kinet, [block_vars], 0.0, 600.0, precip_indices
+    )
     block_vars = mesh_vars[0]
 
     print_ok("Nudging from ECMWF data at index ", index, " completed.\n",
@@ -402,14 +485,15 @@ def run_spinup(mesh: Mesh,
                stage_topography: list[dict[str, torch.Tensor]],
                current_time: float,
                config_file: str,
-               chunk_duration: float):
+               chunk_duration: float,
+               precip_indices: tuple[int, ...]):
     for output in mesh.blocks[0].options.outputs():
         output.dt(3600.)
 
     for chunk in range(1, 4):
         start_clock = time.time()
         mesh_vars, current_time = run_simulation(
-            mesh, thermo_x, kinet, [block_vars], current_time, chunk_duration
+            mesh, thermo_x, kinet, [block_vars], current_time, chunk_duration, precip_indices
         )
         block_vars = mesh_vars[0]
         mesh, thermo_x, kinet, block_vars = refine_simulation(
@@ -417,7 +501,7 @@ def run_spinup(mesh: Mesh,
         )
 
         block_vars = nudge_from_ecmwf(mesh, thermo_x, kinet,
-                                      block_vars, ecmwf_hydro_u[chunk], chunk,
+                                      block_vars, ecmwf_hydro_u[chunk], precip_indices, chunk,
                                       refinement_level=chunk)
         end_clock = time.time()
         print_ok("Completed chunk ", chunk, "/ 3 for the day.\n",
@@ -517,8 +601,172 @@ def refine_simulation(mesh: Mesh,
 
     return mesh, thermo_x, kinet, block_vars
 
+
+def prepare_initial_state(
+    mesh: Mesh,
+    thermo_x: ThermoX,
+    block_vars: dict[str, torch.Tensor],
+    topo_vars: dict[str, torch.Tensor],
+) -> tuple[dict[str, torch.Tensor], float]:
+    block = mesh.blocks[0]
+    block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
+    x1v = torch.meshgrid(
+        block.module("coord").buffer("x3v"),
+        block.module("coord").buffer("x2v"),
+        block.module("coord").buffer("x1v"),
+        indexing="ij",
+    )[2]
+    topo0 = build_topography_field_for_block(block, topo_vars)
+    mesh_vars, current_time = mesh.initialize([{"hydro_w": block_vars["hydro_w"]}])
+    block_vars = mesh_vars[0]
+    block_vars["topo"] = x1v < topo0
+    return block_vars, current_time
+
+
+def log_loaded_inputs(
+    block_vars: dict[str, torch.Tensor],
+    stage_topography: list[dict[str, torch.Tensor]],
+) -> None:
+    print_ok("Block variables loaded from ECMWF input:")
+    for key, data in block_vars.items():
+        print(f"  - {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
+
+    print_ok("Topography stages:")
+    for label, topo_vars in zip(TOPO_SEQUENCE, stage_topography):
+        print(f"  - {label}: raw shape = {tuple(topo_vars['topography'].shape)}")
+
+
+def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
+    restart_file = resolve_restart_file(args.input_dir)
+    topography_root = (
+        Path(args.topography_dir).resolve()
+        if args.topography_dir is not None
+        else default_topography_dir(args.config)
+    )
+    topography_files = discover_topography_files(str(topography_root))
+    precip_indices = precipitation_tracer_indices(args.config)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    mesh, thermo_x, kinet, device = create_mesh(
+        args.config, args.output_dir, requested_device=args.device
+    )
+    time_slices, topography_modules = load_time_series_inputs(
+        restart_file, topography_files, device
+    )
+    block_vars = time_slices[0]
+    block = mesh.blocks[0]
+    eos = block.module("hydro.eos")
+    ecmwf_hydro_u = [eos.compute("W->U", (slice_vars["hydro_w"],)) for slice_vars in time_slices]
+    stage_topography = [topography_modules[label] for label in TOPO_SEQUENCE]
+    log_loaded_inputs(block_vars, stage_topography)
+    block_vars, current_time = prepare_initial_state(
+        mesh, thermo_x, block_vars, stage_topography[0]
+    )
+
+    return ForecastContext(
+        mesh=mesh,
+        thermo_x=thermo_x,
+        kinet=kinet,
+        device=device,
+        block_vars=block_vars,
+        ecmwf_hydro_u=ecmwf_hydro_u,
+        stage_topography=stage_topography,
+        precip_indices=precip_indices,
+        current_time=current_time,
+    )
+
+
+def with_disabled_lateral_fluxes(block: MeshBlock):
+    block.options.hydro().disable_flux_x2(True)
+    block.options.hydro().disable_flux_x3(True)
+
+
+def with_enabled_lateral_fluxes(block: MeshBlock):
+    block.options.hydro().disable_flux_x2(False)
+    block.options.hydro().disable_flux_x3(False)
+
+
+def run_hydrostatic_adjustment(ctx: ForecastContext, duration: float) -> None:
+    block = ctx.mesh.blocks[0]
+    start_clock = time.time()
+    with_disabled_lateral_fluxes(block)
+    ctx.mesh.make_outputs([ctx.block_vars], ctx.current_time)
+    mesh_vars, ctx.current_time = run_simulation(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        [ctx.block_vars],
+        ctx.current_time,
+        duration,
+        ctx.precip_indices,
+    )
+    ctx.block_vars = mesh_vars[0]
+    ctx.current_time = 0.0
+    with_enabled_lateral_fluxes(block)
+    end_clock = time.time()
+    print_ok(
+        "Step 1 (hydrostatic adjustment) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
+def run_spinup_stage(ctx: ForecastContext, config_file: str, chunk_duration: float) -> None:
+    start_clock = time.time()
+    (
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        ctx.block_vars,
+        ctx.current_time,
+    ) = run_spinup(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        ctx.block_vars,
+        ctx.ecmwf_hydro_u,
+        ctx.stage_topography,
+        ctx.current_time,
+        config_file,
+        chunk_duration,
+        ctx.precip_indices,
+    )
+    end_clock = time.time()
+    print_ok(
+        "Step 2 (spinup) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
+def run_prediction_stage(ctx: ForecastContext, duration: float) -> None:
+    start_clock = time.time()
+    mesh_vars, ctx.current_time = run_simulation(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        [ctx.block_vars],
+        ctx.current_time,
+        duration,
+        ctx.precip_indices,
+    )
+    ctx.block_vars = mesh_vars[0]
+    end_clock = time.time()
+    print_ok(
+        "Step 3 (prediction) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
+def finalize_forecast(ctx: ForecastContext) -> None:
+    ctx.mesh.finalize([ctx.block_vars], ctx.current_time)
+    print_ok("Simulation finalized at time = ", ctx.current_time, " seconds.")
+
 def main():
-    # parse arguments
     parser = argparse.ArgumentParser(description="Run hydrodynamic simulation.")
     parser.add_argument(
         "-c", "--config", type=str,
@@ -526,11 +774,11 @@ def main():
     )
     parser.add_argument(
         "-i", "--input_dir", type=str,
-        default='./input', help="input directory."
+        default=None, help="directory containing regridded ERA5 tensor .part files."
     )
     parser.add_argument(
         "-o", "--output_dir", type=str,
-        default='./output', help="output directory."
+        default=None, help="forecast output directory."
     )
     parser.add_argument(
         "--topography-dir", type=str,
@@ -555,102 +803,22 @@ def main():
     )
     args = parser.parse_args()
 
-    restart_file = resolve_restart_file(args.input_dir)
-    topography_root = (
-        Path(args.topography_dir).resolve()
-        if args.topography_dir is not None
-        else default_topography_dir(args.config)
-    )
-    topography_files = discover_topography_files(str(topography_root))
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    if args.input_dir is None:
+        args.input_dir = str(default_input_dir(args.config))
+    if args.output_dir is None:
+        args.output_dir = str(default_output_dir(args.config))
 
-    mesh = None
-    block_vars = None
-    current_time = 0.0
+    ctx = None
     try:
-        mesh, thermo_x, kinet, device = create_mesh(
-            args.config, args.output_dir, requested_device=args.device
-        )
-        time_slices, topography_modules = load_time_series_inputs(
-            restart_file, topography_files, device
-        )
-        block_vars = time_slices[0]
-        print_ok("Block variables loaded from ECMWF input:")
-        for key, data in block_vars.items():
-            print(f"  - {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
-
-        block = mesh.blocks[0]
-        eos = block.module("hydro.eos")
-        ecmwf_hydro_u = [eos.compute("W->U", (slice_vars["hydro_w"],)) for slice_vars in time_slices]
-
-        stage_topography = [topography_modules[label] for label in TOPO_SEQUENCE]
-
-        print_ok("Topography stages:")
-        for label, topo_vars in zip(TOPO_SEQUENCE, stage_topography):
-            print(f"  - {label}: raw shape = {tuple(topo_vars['topography'].shape)}")
-
-        # initialize model
-        block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
-        x1v = torch.meshgrid(
-            block.module("coord").buffer("x3v"),
-            block.module("coord").buffer("x2v"),
-            block.module("coord").buffer("x1v"),
-            indexing="ij",
-        )[2]
-        topo0 = build_topography_field_for_block(block, stage_topography[0])
-        mesh_vars, current_time = mesh.initialize([{"hydro_w": block_vars["hydro_w"]}])
-        block_vars = mesh_vars[0]
-        block_vars["topo"] = x1v < topo0
-
-        # Step 1
-        start_clock = time.time()
-        block.options.hydro().disable_flux_x2(True)
-        block.options.hydro().disable_flux_x3(True)
-        mesh.make_outputs([block_vars], current_time)
-        mesh_vars, current_time = run_simulation(
-            mesh, thermo_x, kinet, [block_vars], current_time, args.hydrostatic_duration
-        )
-        block_vars = mesh_vars[0]
-        current_time = 0.0
-        block.options.hydro().disable_flux_x2(False)
-        block.options.hydro().disable_flux_x3(False)
-        end_clock = time.time()
-        print_ok("Step 1 (hydrostatic adjustment) completed.\n",
-                 "Current time = ", current_time, " seconds.\n",
-                 "Current cycle = ", mesh.blocks[0].cycle(), ".\n",
-                 "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-
-        # Step 2
-        start_clock = end_clock
-        mesh, thermo_x, kinet, block_vars, current_time = run_spinup(
-            mesh, thermo_x, kinet, block_vars, ecmwf_hydro_u,
-            stage_topography, current_time, args.config, args.spinup_chunk_duration
-        )
-        end_clock = time.time()
-        print_ok("Step 2 (spinup) completed.\n",
-                 "Current time = ", current_time, " seconds.\n",
-                 "Current cycle = ", mesh.blocks[0].cycle(), ".\n",
-                 "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-
-        # Step 3
-        start_clock = end_clock
-        mesh_vars, current_time = run_simulation(
-            mesh, thermo_x, kinet, [block_vars], current_time, args.prediction_duration
-        )
-        block_vars = mesh_vars[0]
-        end_clock = time.time()
-        print_ok("Step 3 (prediction) completed.\n",
-                 "Current time = ", current_time, " seconds.\n",
-                 "Current cycle = ", mesh.blocks[0].cycle(), ".\n",
-                 "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-
-        # Step 4
-        mesh.finalize([block_vars], current_time)
-        print_ok("Simulation finalized at time = ", current_time, " seconds.")
+        ctx = build_forecast_context(args)
+        run_hydrostatic_adjustment(ctx, args.hydrostatic_duration)
+        run_spinup_stage(ctx, args.config, args.spinup_chunk_duration)
+        run_prediction_stage(ctx, args.prediction_duration)
+        finalize_forecast(ctx)
     finally:
-        if mesh is not None and block_vars is not None:
+        if ctx is not None:
             try:
-                mesh.finalize([block_vars], current_time)
+                ctx.mesh.finalize([ctx.block_vars], ctx.current_time)
             except Exception:
                 pass
         if dist.is_available() and dist.is_initialized():
