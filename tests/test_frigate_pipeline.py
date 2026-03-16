@@ -32,10 +32,10 @@ def locate_sacramento_kml() -> Path:
 
 def test_expand_bounds_enforces_minimum_extent():
     bounds = (-121.2, 38.0, -120.9, 38.2)
-    lon_min, lat_min, lon_max, lat_max = expand_bounds(bounds, min_size_degrees=1.5)
+    lon_min, lat_min, lon_max, lat_max = expand_bounds(bounds, min_size_degrees=1.2)
 
-    assert round(lat_max - lat_min, 6) == 1.5
-    assert round(lon_max - lon_min, 6) == 1.5
+    assert round(lat_max - lat_min, 6) == 1.2
+    assert round(lon_max - lon_min, 6) == 1.2
 
 
 def test_write_digest_and_config(tmp_path):
@@ -46,7 +46,7 @@ def test_write_digest_and_config(tmp_path):
     payload = write_region_digest(digest_path, region, prepared, date="2025-02-01")
     loaded = json.loads(digest_path.read_text(encoding="utf-8"))
     assert loaded["region_id"] == region.region_id
-    assert loaded["padded_extent_degrees"]["latitude"] >= 1.5
+    assert loaded["padded_extent_degrees"]["latitude"] >= 1.2
     assert payload["simulation_grid"]["nx2"] == prepared.nx2
 
     config_path = tmp_path / "config.yaml"

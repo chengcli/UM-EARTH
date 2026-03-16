@@ -20,7 +20,7 @@ from .regions import RegionDefinition, load_region
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TEMPLATE = PROJECT_ROOT / "config_template.yaml"
 DEFAULT_WORKSPACE_ROOT = Path("/home/chengcli/data/2025.FRIGATE") / "runs"
-DEFAULT_MIN_DOMAIN_DEGREES = 1.5
+DEFAULT_MIN_DOMAIN_DEGREES = 1.2
 DEFAULT_TARGET_RESOLUTIONS_KM = (2.4, 1.2, 0.6, 0.3)
 DEFAULT_ERA5_TIMES = ("00:00", "06:00", "12:00", "18:00")
 DEFAULT_X1_MAX_METERS = 10_000.0

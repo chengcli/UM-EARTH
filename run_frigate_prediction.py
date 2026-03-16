@@ -20,6 +20,10 @@ torch.set_default_dtype(torch.float64)
 
 TOPO_SEQUENCE = ("2p4km", "1p2km", "0p6km", "0p3km")
 
+
+def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
+    return 1
+
 def print_ok(*args):
     message = " ".join(str(arg) for arg in args)
     print("\033[92m[OK]\033[0m ", message, flush=True)
@@ -438,8 +442,16 @@ def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
 
     with open(config_file, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
+    base_nx2 = int(config["geometry"]["cells"]["nx2"])
+    base_nx3 = int(config["geometry"]["cells"]["nx3"])
     config["geometry"]["cells"]["nx2"] = current_nx2 * 2 if current_nx2 > 1 else 1
     config["geometry"]["cells"]["nx3"] = current_nx3 * 2 if current_nx3 > 1 else 1
+    next_nx2 = int(config["geometry"]["cells"]["nx2"])
+    next_nx3 = int(config["geometry"]["cells"]["nx3"])
+    refinement_factor = max(next_nx2 / max(base_nx2, 1), next_nx3 / max(base_nx3, 1))
+    config["integration"]["implicit-scheme"] = implicit_scheme_for_refinement_factor(
+        refinement_factor
+    )
 
     refined_config = (
         Path(old_block.options.output_dir()) / f"{Path(config_file).stem}.refined.yaml"

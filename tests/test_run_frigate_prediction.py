@@ -58,3 +58,12 @@ def test_build_topography_field_flips_north_first_rows():
     interior = padded[1:-1, 1:-1, 0]
     expected = torch.tensor([[30.0, 10.0], [40.0, 20.0]], dtype=torch.float64)
     assert torch.equal(interior, expected)
+
+
+def test_implicit_scheme_for_refinement_factor():
+    module = load_module()
+
+    assert module.implicit_scheme_for_refinement_factor(1.0) == 1
+    assert module.implicit_scheme_for_refinement_factor(2.0) == 1
+    assert module.implicit_scheme_for_refinement_factor(4.0) == 1
+    assert module.implicit_scheme_for_refinement_factor(8.0) == 1
