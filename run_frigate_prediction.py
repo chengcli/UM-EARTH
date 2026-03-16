@@ -135,21 +135,22 @@ def create_mesh(config_file: str, output_dir: str, requested_device: str = "auto
     print_ok("Using device =", device, "with backend =", backend)
 
     mesh = Mesh(options)
-    mesh.to(device)
+    mesh_device = torch.device(mesh.options.device_str() or str(device))
+    mesh.to(mesh_device)
     for block in mesh.blocks:
         block.set_user_output_func(call_user_output)
 
     block0 = mesh.blocks[0]
     thermo_y = block0.module("hydro.eos.thermo")
     thermo_x = ThermoX(thermo_y.options)
-    thermo_x.to(device)
+    thermo_x.to(mesh_device)
 
     # kinetics model
     op_kinet = KineticsOptions.from_yaml(config_file)
     kinet = Kinetics(op_kinet)
-    kinet.to(device)
+    kinet.to(mesh_device)
 
-    return mesh, thermo_x, kinet, device
+    return mesh, thermo_x, kinet, mesh_device
 
 def load_restart_slice(
     restart_file: Path,
