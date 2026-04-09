@@ -27,6 +27,7 @@ Requirements:
 import argparse
 import sys
 import os
+import math
 import yaml
 import subprocess
 from typing import Dict, Tuple
@@ -228,26 +229,7 @@ def calculate_latlon_limits(geometry: Dict) -> Tuple[float, float, float, float]
     
     meters_per_degree_lat = 111320.0  # meters per degree latitude
     meters_per_degree_lon = 111320.0 * math.cos(math.radians(center_lat))
-    
-    # Calculate lat-lon extents from the center
-    # Y direction corresponds to latitude (north-south)
-    # delta_lat_min = y_min / meters_per_degree_lat  # Unused variable removed
-    
-    # X direction corresponds to longitude (east-west)
-    delta_lon_min = x_min / meters_per_degree_lon
-    delta_lon_max = x_max / meters_per_degree_lon
-    
-    # Calculate absolute lat-lon limits
-    # Note: y_min, y_max, x_min, x_max are distances from center
-    # For a domain that starts at 0, the center is at (y_max-y_min)/2
-    # But the problem states bounds are domain boundaries including ghost cells
-    # So we interpret these as offsets from center
-    
-    # Calculate domain center offsets
-    y_center_offset = (y_min + y_max) / 2.0
-    x_center_offset = (x_min + x_max) / 2.0
-    
-    # Calculate extents relative to center
+    # Calculate extents relative to the domain center.
     y_extent = (y_max - y_min) / 2.0
     x_extent = (x_max - x_min) / 2.0
     
@@ -338,6 +320,38 @@ def add_buffer_zone(latmin: float, latmax: float,
     buffered_lonmax = min(180.0, lonmax + lon_buffer)
     
     return buffered_latmin, buffered_latmax, buffered_lonmin, buffered_lonmax
+
+
+def snap_bounds_to_era5_grid(
+    latmin: float,
+    latmax: float,
+    lonmin: float,
+    lonmax: float,
+    grid_degrees: float = 0.25,
+) -> Tuple[float, float, float, float]:
+    """
+    Expand geographic bounds outward to the ERA5 latitude/longitude grid.
+
+    ERA5 pressure-level products are provided on a 0.25 degree grid. If we pass
+    arbitrary decimal bounds to CDS, the returned coordinates only include grid
+    points strictly inside that box. Snapping outward ensures the fetched domain
+    fully contains the requested Cartesian grid after regridding.
+    """
+    if grid_degrees <= 0.0:
+        raise ValueError("grid_degrees must be positive")
+
+    snapped_latmin = max(-90.0, math.floor(latmin / grid_degrees) * grid_degrees)
+    snapped_latmax = min(90.0, math.ceil(latmax / grid_degrees) * grid_degrees)
+    snapped_lonmin = max(-180.0, math.floor(lonmin / grid_degrees) * grid_degrees)
+    snapped_lonmax = min(180.0, math.ceil(lonmax / grid_degrees) * grid_degrees)
+
+    decimals = max(0, int(round(-math.log10(grid_degrees))) + 2)
+    return (
+        round(snapped_latmin, decimals),
+        round(snapped_latmax, decimals),
+        round(snapped_lonmin, decimals),
+        round(snapped_lonmax, decimals),
+    )
 
 
 def format_lat_lon_string(value: float, is_latitude: bool) -> str:
@@ -528,8 +542,19 @@ The script will:
         print(f"    Latitude:  [{latmin_buf:.4f}, {latmax_buf:.4f}]")
         print(f"    Longitude: [{lonmin_buf:.4f}, {lonmax_buf:.4f}]")
         
+        # Snap outward to the ERA5 grid so the fetched coordinates fully cover the domain.
+        print("\nSnapping buffered limits outward to ERA5 0.25 degree grid...")
+        latmin_fetch, latmax_fetch, lonmin_fetch, lonmax_fetch = snap_bounds_to_era5_grid(
+            latmin_buf, latmax_buf, lonmin_buf, lonmax_buf, grid_degrees=0.25
+        )
+        print(f"  Fetch limits:")
+        print(f"    Latitude:  [{latmin_fetch:.4f}, {latmax_fetch:.4f}]")
+        print(f"    Longitude: [{lonmin_fetch:.4f}, {lonmax_fetch:.4f}]")
+
         # Generate output directory name
-        output_dirname = generate_output_dirname(latmin_buf, latmax_buf, lonmin_buf, lonmax_buf)
+        output_dirname = generate_output_dirname(
+            latmin_fetch, latmax_fetch, lonmin_fetch, lonmax_fetch
+        )
         output_dir = os.path.join(args.output_base, output_dirname)
         
         print(f"\nOutput directory: {output_dir}")
@@ -539,7 +564,7 @@ The script will:
         
         # Fetch ERA5 data
         fetch_era5_data(
-            latmin_buf, latmax_buf, lonmin_buf, lonmax_buf,
+            latmin_fetch, latmax_fetch, lonmin_fetch, lonmax_fetch,
             integration['start_date'], integration['end_date'],
             output_dir,
             times=args.times,

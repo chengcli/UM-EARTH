@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import torch
 
@@ -64,6 +65,17 @@ def test_discover_topography_files_returns_all_stages(tmp_path):
 
     assert list(mapping) == list(module.TOPO_SEQUENCE)
     assert mapping["2p4km"].name == "sacramento_valley_topo_2p4km.pt"
+
+
+def test_discover_topography_files_can_select_single_stage(tmp_path):
+    module = load_module()
+    topo_dir = tmp_path / "products"
+    topo_dir.mkdir()
+    (topo_dir / "pte1b_topo_2p4km.pt").write_text("", encoding="utf-8")
+
+    mapping = module.discover_topography_files(str(topo_dir), required_labels=("2p4km",))
+
+    assert mapping == {"2p4km": topo_dir / "pte1b_topo_2p4km.pt"}
 
 
 def test_build_topography_field_flips_north_first_rows():
@@ -129,3 +141,76 @@ def test_remove_surface_precipitation_zeros_lowest_fluid_cells():
     )
     assert torch.equal(updated[module.kICY + 2], expected)
     assert torch.equal(updated[module.kICY], hydro_w[module.kICY])
+
+
+def test_clone_with_lateral_ghost_zones_updates_only_boundary_cells():
+    module = load_module()
+    interior = torch.zeros((2, 6, 6, 3), dtype=torch.float64)
+    boundary = torch.ones((2, 6, 6, 3), dtype=torch.float64)
+
+    updated = module.clone_with_lateral_ghost_zones(interior, boundary, nghost=1)
+
+    assert torch.equal(updated[:, 1:-1, 1:-1, :], interior[:, 1:-1, 1:-1, :])
+    assert torch.all(updated[:, 0, :, :] == 1.0)
+    assert torch.all(updated[:, -1, :, :] == 1.0)
+    assert torch.all(updated[:, :, 0, :] == 1.0)
+    assert torch.all(updated[:, :, -1, :] == 1.0)
+
+
+def test_selected_topography_labels_for_no_refinement():
+    module = load_module()
+
+    assert module.selected_topography_labels("none", None) == ("2p4km",)
+    assert module.selected_topography_labels("none", "1p2km") == ("1p2km",)
+    assert module.selected_topography_labels("staged", None) == module.TOPO_SEQUENCE
+
+
+def test_run_forecast_uses_low_resolution_ghost_path(monkeypatch):
+    module = load_module()
+    calls = []
+
+    def fake_build(args):
+        calls.append(("build", args.refinement_mode, args.forcing_mode))
+        return "ctx"
+
+    def fake_hydro(ctx, duration):
+        calls.append(("hydro", ctx, duration))
+
+    def fake_spinup(*args, **kwargs):
+        raise AssertionError("staged spinup should not run in low-resolution ghost mode")
+
+    def fake_prediction(*args, **kwargs):
+        raise AssertionError("plain prediction should not run in low-resolution ghost mode")
+
+    def fake_prediction_ghost(ctx, duration, interval):
+        calls.append(("ghost", ctx, duration, interval))
+
+    def fake_finalize(ctx):
+        calls.append(("finalize", ctx))
+
+    monkeypatch.setattr(module, "build_forecast_context", fake_build)
+    monkeypatch.setattr(module, "run_hydrostatic_adjustment", fake_hydro)
+    monkeypatch.setattr(module, "run_spinup_stage", fake_spinup)
+    monkeypatch.setattr(module, "run_prediction_stage", fake_prediction)
+    monkeypatch.setattr(module, "run_prediction_stage_with_ghost_forcing", fake_prediction_ghost)
+    monkeypatch.setattr(module, "finalize_forecast", fake_finalize)
+    monkeypatch.setattr(module.dist, "is_available", lambda: False)
+    monkeypatch.setattr(module.dist, "is_initialized", lambda: False)
+
+    args = SimpleNamespace(
+        refinement_mode="none",
+        forcing_mode="ghost",
+        hydrostatic_duration=10.0,
+        prediction_duration=86400.0,
+        forcing_interval_seconds=21600.0,
+        config="dummy.yaml",
+    )
+
+    module.run_forecast(args)
+
+    assert calls == [
+        ("build", "none", "ghost"),
+        ("hydro", "ctx", 10.0),
+        ("ghost", "ctx", 86400.0, 21600.0),
+        ("finalize", "ctx"),
+    ]

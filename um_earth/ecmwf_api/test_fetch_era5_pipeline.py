@@ -482,6 +482,24 @@ class TestAddBufferZone(unittest.TestCase):
         self.assertLessEqual(buf_lonmax, 180.0)
 
 
+class TestSnapBoundsToEra5Grid(unittest.TestCase):
+    """Test snapping buffered bounds outward to the ERA5 0.25 degree grid."""
+
+    def test_snap_bounds_outward(self):
+        result = fetch_era5_pipeline.snap_bounds_to_era5_grid(
+            32.76, 34.19, -107.26, -105.83
+        )
+
+        self.assertEqual(result, (32.75, 34.25, -107.5, -105.75))
+
+    def test_snap_preserves_existing_grid_alignment(self):
+        result = fetch_era5_pipeline.snap_bounds_to_era5_grid(
+            33.0, 34.25, -107.25, -106.0
+        )
+
+        self.assertEqual(result, (33.0, 34.25, -107.25, -106.0))
+
+
 class TestFormatLatLonString(unittest.TestCase):
     """Test cases for format_lat_lon_string function."""
     

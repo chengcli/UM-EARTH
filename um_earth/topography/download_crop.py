@@ -64,6 +64,64 @@ def find_existing_raw_tifs(save_dir: Path) -> list[Path]:
         if not path.name.startswith("clip_")
     )
 
+
+def query_tnm_products(download_bbox) -> list[dict]:
+    endpoint = "https://tnmaccess.nationalmap.gov/api/v1/products"
+    dataset_names = (
+        "National Elevation Dataset (NED) 1/3 arc-second Current",
+        "Digital Elevation Model (DEM) 1/3 arc-second",
+    )
+    params_base = {
+        "bbox": f"{download_bbox[0]},{download_bbox[1]},{download_bbox[2]},{download_bbox[3]}",
+        "max": 200,
+    }
+
+    last_error = None
+    for dataset in dataset_names:
+        params = dict(params_base)
+        params["datasets"] = dataset
+        try:
+            response = requests.get(endpoint, params=params, timeout=60)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            last_error = exc
+            continue
+
+        items = response.json().get("items", [])
+        if items:
+            return items
+
+    if last_error is not None:
+        raise last_error
+    return []
+
+
+def download_3dep_image_server_tif(bbox, output_file: Path) -> None:
+    lon_min, lat_min, lon_max, lat_max = bbox
+    avg_lat = (lat_min + lat_max) / 2.0
+    width_m = (lon_max - lon_min) * 111_000.0 * math.cos(math.radians(avg_lat))
+    height_m = (lat_max - lat_min) * 111_000.0
+    width_px = max(256, min(8000, math.ceil(width_m / 10.0)))
+    height_px = max(256, min(8000, math.ceil(height_m / 10.0)))
+
+    params = {
+        "bbox": f"{lon_min},{lat_min},{lon_max},{lat_max}",
+        "bboxSR": 4326,
+        "imageSR": 4326,
+        "format": "tiff",
+        "pixelType": "F32",
+        "size": f"{width_px},{height_px}",
+        "f": "image",
+    }
+    endpoint = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage"
+
+    print("\n[Fallback] Downloading DEM from USGS 3DEP ImageServer...")
+    print(f"Image size: {width_px} x {height_px}")
+    response = requests.get(endpoint, params=params, timeout=300)
+    response.raise_for_status()
+    output_file.write_bytes(response.content)
+    print("Saved merged DEM:", output_file.resolve())
+
 def save_tensors(tensor_map: dict[str, torch.Tensor], filename: str):
     class TensorModule(torch.nn.Module):
         def __init__(self, tensors):
@@ -145,31 +203,24 @@ def main():
     print("Save to location:", save_dir.resolve())
 
     existing_raw_tifs = find_existing_raw_tifs(save_dir)
+    merged_fp = save_dir / f"{region.region_id}_merged_10m.tif"
+    have_direct_merged = merged_fp.exists()
     if args.skip_download and existing_raw_tifs:
         print("\n[SKIP] Found existing raw tif files. Reusing them without querying USGS TNM API.")
         items = []
     else:
-        # TNM Access API
-
-        endpoint = "https://tnmaccess.nationalmap.gov/api/v1/products"
-        params = {
-            "datasets": "National Elevation Dataset (NED) 1/3 arc-second Current",
-            "bbox": f"{download_bbox[0]},{download_bbox[1]},{download_bbox[2]},{download_bbox[3]}",
-            "max": 200,
-        }
-
-
         print("\nQuerying USGS TNM API...")
-        r = requests.get(endpoint, params=params, timeout=60)
-        r.raise_for_status()
-        data = r.json()
+        try:
+            items = query_tnm_products(download_bbox)
+        except requests.RequestException as exc:
+            print(f"TNM query failed: {exc}")
+            items = []
 
-        items = data.get("items", [])
-        if not items:
-            print("No DEM products returned.")
-            sys.exit(1)
-
-        print(f"Found {len(items)} DEM file(s). Starting download...\n")
+        if items:
+            print(f"Found {len(items)} DEM file(s). Starting download...\n")
+        else:
+            download_3dep_image_server_tif(bbox, merged_fp)
+            have_direct_merged = True
 
 
     # Download DEM tiles (optional)
@@ -209,7 +260,9 @@ def main():
 
     clipped_tifs = sorted(save_dir.glob("clip_*.tif"))
 
-    if clipped_tifs:
+    if have_direct_merged and merged_fp.exists():
+        print("[SKIP] Using directly downloaded merged DEM.")
+    elif clipped_tifs:
         print(f"[SKIP] Found {len(clipped_tifs)} existing clipped tiles. Reusing them.")
     else:
         print("[RUN] No clipped tiles found. Performing clipping...")
@@ -277,8 +330,6 @@ def main():
     # 3 Merge all clipped tiles into a single GeoTIFF
 
     # 3) Merge all clipped tiles into a single GeoTIFF
-    merged_fp = save_dir / f"{region.region_id}_merged_10m.tif"
-
     if merged_fp.exists():
         print("\n[SKIP] Merged DEM already exists. Reusing:", merged_fp.resolve())
     else:

@@ -35,6 +35,12 @@ class ForecastContext:
     current_time: float = 0.0
 
 
+@dataclass(frozen=True)
+class ForcingSchedule:
+    interval_seconds: float
+    next_index: int = 1
+
+
 def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
     return 1
 
@@ -101,15 +107,18 @@ def parse_topography_label(path: Path) -> str:
     return path.stem.split(marker, 1)[1]
 
 
-def discover_topography_files(topography_dir: str) -> dict[str, Path]:
+def discover_topography_files(
+    topography_dir: str,
+    required_labels: tuple[str, ...] = TOPO_SEQUENCE,
+) -> dict[str, Path]:
     topo_root = Path(topography_dir).resolve()
     topo_paths = sorted(topo_root.glob("*_topo_*.pt"))
     if not topo_paths:
         raise FileNotFoundError(f"Could not find any topography tensors in {topo_root}")
 
     discovered = {parse_topography_label(path): path for path in topo_paths}
-    mapping = {label: discovered[label] for label in TOPO_SEQUENCE if label in discovered}
-    missing = [label for label in TOPO_SEQUENCE if label not in mapping]
+    mapping = {label: discovered[label] for label in required_labels if label in discovered}
+    missing = [label for label in required_labels if label not in mapping]
     if missing:
         raise FileNotFoundError(
             f"Missing topography tensors for {missing} in {topo_root}; found {sorted(mapping)}"
@@ -288,6 +297,15 @@ def load_time_series_inputs(
     return time_slices, topography
 
 
+def selected_topography_labels(
+    refinement_mode: str,
+    topography_stage: str | None,
+) -> tuple[str, ...]:
+    if refinement_mode == "staged":
+        return TOPO_SEQUENCE
+    return (topography_stage or TOPO_SEQUENCE[0],)
+
+
 def build_topography_field_for_block(
     block: MeshBlock,
     topo_vars: dict[str, torch.Tensor],
@@ -347,6 +365,46 @@ def remove_surface_precipitation(
         updated[index] = torch.where(surface, torch.zeros_like(updated[index]), updated[index])
     return updated
 
+
+def next_forcing_time(schedule: ForcingSchedule, available_slices: int) -> float | None:
+    if schedule.next_index >= available_slices:
+        return None
+    return schedule.next_index * schedule.interval_seconds
+
+
+def clone_with_lateral_ghost_zones(
+    state: torch.Tensor,
+    boundary_state: torch.Tensor,
+    nghost: int,
+) -> torch.Tensor:
+    if nghost <= 0:
+        return state
+    if state.shape != boundary_state.shape:
+        raise ValueError(
+            f"State shape mismatch: {tuple(state.shape)} vs {tuple(boundary_state.shape)}"
+        )
+
+    updated = state.clone()
+    updated[..., :nghost, :, :] = boundary_state[..., :nghost, :, :]
+    updated[..., -nghost:, :, :] = boundary_state[..., -nghost:, :, :]
+    updated[..., :, :nghost, :] = boundary_state[..., :, :nghost, :]
+    updated[..., :, -nghost:, :] = boundary_state[..., :, -nghost:, :]
+    return updated
+
+
+def apply_ghost_zone_forcing(
+    mesh: Mesh,
+    block_vars: dict[str, torch.Tensor],
+    target_hydro_u: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    nghost = mesh.blocks[0].options.coord().nghost()
+    block_vars["hydro_u"] = clone_with_lateral_ghost_zones(
+        block_vars["hydro_u"], target_hydro_u, nghost
+    )
+    eos = mesh.blocks[0].module("hydro.eos")
+    block_vars["hydro_w"] = eos.compute("U->W", (block_vars["hydro_u"],))
+    return block_vars
+
 def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
                         eos,
                         precip_indices: tuple[int, ...],
@@ -382,7 +440,9 @@ def run_simulation(mesh: Mesh,
                    mesh_vars: list[dict[str, torch.Tensor]],
                    current_time: float,
                    duration: float,
-                   precip_indices: tuple[int, ...]):
+                   precip_indices: tuple[int, ...],
+                   forcing_schedule: ForcingSchedule | None = None,
+                   forcing_states: list[torch.Tensor] | None = None):
     block0 = mesh.blocks[0]
     block_vars = mesh_vars[0]
     eos = block0.module("hydro.eos")
@@ -395,6 +455,10 @@ def run_simulation(mesh: Mesh,
         cycle += 1
         mesh.set_cycle(cycle)
         dt = mesh.max_time_step(mesh_vars)
+        if forcing_schedule is not None and forcing_states is not None:
+            refresh_time = next_forcing_time(forcing_schedule, len(forcing_states))
+            if refresh_time is not None:
+                dt = min(dt, max(refresh_time - current_time, 0.0))
         mesh.print_cycle_info(mesh_vars, current_time, dt)
 
         for stage in range(len(intg.stages)):
@@ -414,6 +478,15 @@ def run_simulation(mesh: Mesh,
 
         current_time += dt
         mesh.make_outputs(mesh_vars, current_time)
+        if forcing_schedule is not None and forcing_states is not None:
+            refresh_time = next_forcing_time(forcing_schedule, len(forcing_states))
+            if refresh_time is not None and current_time >= refresh_time - 1.0e-9:
+                forcing_index = min(forcing_schedule.next_index, len(forcing_states) - 1)
+                apply_ghost_zone_forcing(mesh, block_vars, forcing_states[forcing_index])
+                forcing_schedule = ForcingSchedule(
+                    interval_seconds=forcing_schedule.interval_seconds,
+                    next_index=forcing_schedule.next_index + 1,
+                )
 
     return mesh_vars, current_time
 
@@ -632,7 +705,8 @@ def log_loaded_inputs(
         print(f"  - {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
 
     print_ok("Topography stages:")
-    for label, topo_vars in zip(TOPO_SEQUENCE, stage_topography):
+    labels = TOPO_SEQUENCE if len(stage_topography) == len(TOPO_SEQUENCE) else (TOPO_SEQUENCE[0],)
+    for label, topo_vars in zip(labels, stage_topography):
         print(f"  - {label}: raw shape = {tuple(topo_vars['topography'].shape)}")
 
 
@@ -643,7 +717,10 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
         if args.topography_dir is not None
         else default_topography_dir(args.config)
     )
-    topography_files = discover_topography_files(str(topography_root))
+    topography_files = discover_topography_files(
+        str(topography_root),
+        required_labels=selected_topography_labels(args.refinement_mode, args.topography_stage),
+    )
     precip_indices = precipitation_tracer_indices(args.config)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -657,7 +734,10 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
     block = mesh.blocks[0]
     eos = block.module("hydro.eos")
     ecmwf_hydro_u = [eos.compute("W->U", (slice_vars["hydro_w"],)) for slice_vars in time_slices]
-    stage_topography = [topography_modules[label] for label in TOPO_SEQUENCE]
+    if args.refinement_mode == "staged":
+        stage_topography = [topography_modules[label] for label in TOPO_SEQUENCE]
+    else:
+        stage_topography = [topography_modules[args.topography_stage]]
     log_loaded_inputs(block_vars, stage_topography)
     block_vars, current_time = prepare_initial_state(
         mesh, thermo_x, block_vars, stage_topography[0]
@@ -762,9 +842,61 @@ def run_prediction_stage(ctx: ForecastContext, duration: float) -> None:
     )
 
 
+def run_prediction_stage_with_ghost_forcing(
+    ctx: ForecastContext,
+    duration: float,
+    forcing_interval_seconds: float,
+) -> None:
+    start_clock = time.time()
+    mesh_vars, ctx.current_time = run_simulation(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        [ctx.block_vars],
+        ctx.current_time,
+        duration,
+        ctx.precip_indices,
+        forcing_schedule=ForcingSchedule(interval_seconds=forcing_interval_seconds),
+        forcing_states=ctx.ecmwf_hydro_u,
+    )
+    ctx.block_vars = mesh_vars[0]
+    end_clock = time.time()
+    print_ok(
+        "Step 2 (low-resolution prediction with ghost forcing) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
 def finalize_forecast(ctx: ForecastContext) -> None:
     ctx.mesh.finalize([ctx.block_vars], ctx.current_time)
     print_ok("Simulation finalized at time = ", ctx.current_time, " seconds.")
+
+
+def run_forecast(args: argparse.Namespace) -> None:
+    ctx = None
+    try:
+        ctx = build_forecast_context(args)
+        run_hydrostatic_adjustment(ctx, args.hydrostatic_duration)
+        if args.refinement_mode == "staged":
+            run_spinup_stage(ctx, args.config, args.spinup_chunk_duration)
+            run_prediction_stage(ctx, args.prediction_duration)
+        elif args.forcing_mode == "ghost":
+            run_prediction_stage_with_ghost_forcing(
+                ctx, args.prediction_duration, args.forcing_interval_seconds
+            )
+        else:
+            run_prediction_stage(ctx, args.prediction_duration)
+        finalize_forecast(ctx)
+    finally:
+        if ctx is not None:
+            try:
+                ctx.mesh.finalize([ctx.block_vars], ctx.current_time)
+            except Exception:
+                pass
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
 
 def main():
     parser = argparse.ArgumentParser(description="Run hydrodynamic simulation.")
@@ -793,6 +925,25 @@ def main():
         default=21600.0, help="duration in seconds for each ECMWF-synced spinup chunk."
     )
     parser.add_argument(
+        "--refinement-mode", type=str,
+        default="staged", choices=["staged", "none"],
+        help="use staged refinement or stay on a single mesh for the full run."
+    )
+    parser.add_argument(
+        "--forcing-mode", type=str,
+        default="nudge", choices=["nudge", "ghost"],
+        help="apply whole-domain nudging or refresh lateral ghost zones from ERA5."
+    )
+    parser.add_argument(
+        "--forcing-interval-seconds", type=float,
+        default=21600.0, help="interval between ERA5 boundary updates in seconds."
+    )
+    parser.add_argument(
+        "--topography-stage", type=str,
+        default=None, choices=list(TOPO_SEQUENCE),
+        help="topography label to use when refinement is disabled."
+    )
+    parser.add_argument(
         "--prediction-duration", type=float,
         default=7 * 86400.0, help="duration in seconds for the final forecast segment."
     )
@@ -807,22 +958,10 @@ def main():
         args.input_dir = str(default_input_dir(args.config))
     if args.output_dir is None:
         args.output_dir = str(default_output_dir(args.config))
+    required_topography = selected_topography_labels(args.refinement_mode, args.topography_stage)
+    args.topography_stage = required_topography[0]
 
-    ctx = None
-    try:
-        ctx = build_forecast_context(args)
-        run_hydrostatic_adjustment(ctx, args.hydrostatic_duration)
-        run_spinup_stage(ctx, args.config, args.spinup_chunk_duration)
-        run_prediction_stage(ctx, args.prediction_duration)
-        finalize_forecast(ctx)
-    finally:
-        if ctx is not None:
-            try:
-                ctx.mesh.finalize([ctx.block_vars], ctx.current_time)
-            except Exception:
-                pass
-        if dist.is_available() and dist.is_initialized():
-            dist.destroy_process_group()
+    run_forecast(args)
 
 if __name__ == "__main__":
     main()
