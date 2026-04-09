@@ -56,7 +56,7 @@ python generate_all_plots.py ws-site1-2026-02-08/ --threads 4
 
 # Process all time indices with topography overlay using 8 threads
 python generate_all_plots.py ws-site1-2026-02-08/ --all-times --threads 8 \
-  --topo-dir Topo/Data/Split/ws-site1/ --location ws-site1
+  --topo-dir data/topography/split/ws-site1/ --location ws-site1
 
 # Specify output directory and PDF name with multi-threading
 python generate_all_plots.py ws-site1-2026-02-08/ -d output/ -p results.pdf --threads 4
@@ -218,27 +218,27 @@ Generate all diagnostic plots for a simulation with topography:
 ```bash
 # Surface pressure
 python plot_surface_pressure.py out1.nc -o surface_pressure.png \
-  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
+  --topo-dir data/topography/split/ws-site1 --location ws-site1
 
 # Vertical velocity at multiple levels
 python plot_vertical_velocity.py out1.nc -o vertical_velocity.png \
-  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
+  --topo-dir data/topography/split/ws-site1 --location ws-site1
 
 # Horizontal velocity vectors
 python plot_horizontal_velocity.py out1.nc -o horizontal_velocity.png -s 3 \
-  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
+  --topo-dir data/topography/split/ws-site1 --location ws-site1
 
 # Water paths
 python plot_water_paths.py out2.nc -o water_paths.png \
-  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
+  --topo-dir data/topography/split/ws-site1 --location ws-site1
 
 # Lift Condensation Level
 python plot_lcl.py out1.nc out2.nc -o lcl.png \
-  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
+  --topo-dir data/topography/split/ws-site1 --location ws-site1
 
 # Virtual potential temperature
 python plot_theta_v.py out2.nc -o theta_v.png \
-  --topo-dir Topo/Data/Split/ws-site1 --location ws-site1
+  --topo-dir data/topography/split/ws-site1 --location ws-site1
 ```
 
 ## Output

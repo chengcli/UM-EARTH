@@ -39,13 +39,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Add current directory to path for importing local module
 sys.path.insert(0, os.path.dirname(__file__))
 
-from ecmwf_weather_api import ECMWFWeatherAPI
-from ecmwf_utils import (
+try:
+    from .ecmwf_weather_api import ECMWFWeatherAPI
+    from .ecmwf_utils import (
         validate_date_format,
         add_common_arguments,
         generate_date_list,
-        fetch_single_day
-        )
+        fetch_single_day,
+    )
+except ImportError:
+    from ecmwf_weather_api import ECMWFWeatherAPI
+    from ecmwf_utils import (
+        validate_date_format,
+        add_common_arguments,
+        generate_date_list,
+        fetch_single_day,
+    )
 
 def parse_arguments():
     """Parse command-line arguments."""

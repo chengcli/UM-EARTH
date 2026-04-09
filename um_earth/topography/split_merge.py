@@ -26,6 +26,7 @@
 from __future__ import annotations
 from pathlib import Path
 import argparse
+import math
 import sys
 import io
 import csv
@@ -34,13 +35,13 @@ import rasterio
 from scipy.interpolate import RegularGridInterpolator
 import torch
 
-# Path anchors (GitHub-safe)
-SCRIPT_DIR = Path(__file__).resolve().parent      # e.g., UM-EARTH/Topo
-PROJECT_ROOT = SCRIPT_DIR.parent                  # e.g., UM-EARTH 
+# Path anchors
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
 DEFAULT_LOCATIONS = PROJECT_ROOT / "locations.csv"
-DEFAULT_BASE_DIR  = PROJECT_ROOT / "Topo" / "Data" / "Raw"
-DEFAULT_OUT_DIR   = PROJECT_ROOT / "Topo" / "Data" / "Split"
+DEFAULT_BASE_DIR  = PROJECT_ROOT / "data" / "topography" / "raw"
+DEFAULT_OUT_DIR   = PROJECT_ROOT / "data" / "topography" / "split"
 
 
 # TorchScript tensor saver (your preferred format)
@@ -188,6 +189,69 @@ def estimate_bytes_float32(nlat: int, nlon: int) -> int:
     return int(nlat) * int(nlon) * 4
 
 
+def resolution_to_shape(lat_bounds, lon_bounds, resolution_km: float) -> tuple[int, int]:
+    lat_min, lat_max = lat_bounds
+    lon_min, lon_max = lon_bounds
+    avg_lat = (lat_min + lat_max) / 2.0
+    y_extent = (lat_max - lat_min) * 111_000.0
+    x_extent = (lon_max - lon_min) * 111_000.0 * math.cos(math.radians(avg_lat))
+    resolution_m = resolution_km * 1000.0
+    return (
+        max(1, round(y_extent / resolution_m)),
+        max(1, round(x_extent / resolution_m)),
+    )
+
+
+def resolution_label(resolution_km: float) -> str:
+    return f"{resolution_km:.1f}".replace(".", "p") + "km"
+
+
+def save_topography_tensor(topo: TopographyData, output_file: Path) -> Path:
+    h, w = topo.data.shape
+    lat_min, lat_max = topo.lat_bounds
+    lon_min, lon_max = topo.lon_bounds
+
+    lat = np.linspace(lat_max, lat_min, h).astype(np.float32)
+    lon = np.linspace(lon_min, lon_max, w).astype(np.float32)
+    topo_tensor = torch.from_numpy(topo.data.astype(np.float32, copy=False)).contiguous()
+
+    tensor_map = {
+        "topography": topo_tensor,
+        "lat": torch.from_numpy(lat),
+        "lon": torch.from_numpy(lon),
+        "lat_bounds": torch.tensor([lat_min, lat_max], dtype=torch.float32),
+        "lon_bounds": torch.tensor([lon_min, lon_max], dtype=torch.float32),
+        "row0_is_north": torch.tensor([1], dtype=torch.int8),
+    }
+    save_tensors(tensor_map, str(output_file))
+    return output_file
+
+
+def build_resolution_products(
+    *,
+    merged_tif: Path,
+    out_dir: Path,
+    region_id: str,
+    lat_bounds,
+    lon_bounds,
+    target_resolutions_km,
+    method: str = "linear",
+) -> dict[str, Path]:
+    topo, _, _ = from_geotiff(merged_tif, lat_bounds, lon_bounds)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    outputs: dict[str, Path] = {}
+    for resolution_km in target_resolutions_km:
+        target_nlat, target_nlon = resolution_to_shape(lat_bounds, lon_bounds, resolution_km)
+        resized = interpolate_to_shape(topo, target_nlat, target_nlon, method)
+        label = resolution_label(resolution_km)
+        outputs[label] = save_topography_tensor(
+            resized,
+            out_dir / f"{region_id}_topo_{label}.pt",
+        )
+    return outputs
+
+
 # CLI
 def parse_args():
     ap = argparse.ArgumentParser(
@@ -210,14 +274,14 @@ def parse_args():
         "--base-dir",
         type=Path,
         default=DEFAULT_BASE_DIR,
-        help="Directory containing <location>/<location>_merged_10m.tif (default: UM-EARTH/Topo/Data/Raw)"
+        help="Directory containing <location>/<location>_merged_10m.tif (default: UM-EARTH/data/topography/raw)"
     )
 
     ap.add_argument(
         "--out-dir",
         type=Path,
         default=DEFAULT_OUT_DIR,
-        help="Output directory for TorchScript .pt (default: UM-EARTH/Topo/Data/Split)"
+        help="Output directory for TorchScript .pt (default: UM-EARTH/data/topography/split)"
     )
 
     ap.add_argument(

@@ -1,18 +1,48 @@
-import torch
-import yaml
 import argparse
 import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import snapy
+import torch
+import torch.distributed as dist
+import torch.distributed.distributed_c10d as dist_c10d
 import torch.nn.functional as F
-from snapy import MeshBlockOptions, MeshBlock
-from snapy import kIDN, kIPR, kICY, kIV1, kIV2, kIV3
-from kintera import ThermoX, KineticsOptions, Kinetics
-from refine_utils import(
-        conservative_refine, 
-        refine_meshblock,
-        refine_spatial,
-        coarsen_spatial
-        )
+import yaml
+from kintera import Kinetics, KineticsOptions, ThermoX
 from paddle import evolve_kinetics
+from snapy import Mesh, MeshBlock, MeshBlockOptions, MeshOptions
+from snapy import kICY, kIDN, kIPR, kIV1, kIV2, kIV3
+
+from refine_utils import coarsen_spatial, conservative_refine, refine_spatial
+
+
+torch.set_default_dtype(torch.float64)
+
+TOPO_SEQUENCE = ("2p4km", "1p2km", "0p6km", "0p3km")
+
+
+@dataclass
+class ForecastContext:
+    mesh: Mesh
+    thermo_x: ThermoX
+    kinet: Kinetics
+    device: torch.device
+    block_vars: dict[str, torch.Tensor]
+    ecmwf_hydro_u: list[torch.Tensor]
+    stage_topography: list[dict[str, torch.Tensor]]
+    precip_indices: tuple[int, ...]
+    current_time: float = 0.0
+
+
+@dataclass(frozen=True)
+class ForcingSchedule:
+    interval_seconds: float
+    next_index: int = 1
+
+
+def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
+    return 1
 
 def print_ok(*args):
     message = " ".join(str(arg) for arg in args)
@@ -28,56 +58,267 @@ def call_user_output(bvars: dict[str, torch.Tensor]):
     out["qtol"] = hydro_w[kICY:].sum(dim=0)
     return out
 
-def create_block(config_file: str):
-    with open(config_file, "r") as f:
-        config = yaml.safe_load(f)
+def infer_run_dir(config_file: str) -> Path:
+    return Path(config_file).resolve().parent
 
-    # set hydrodynamic options
-    op = MeshBlockOptions.from_yaml(config_file)
-    block = MeshBlock(op)
 
-    # use cuda if available
-    if torch.cuda.is_available() and op.layout().backend() == "nccl":
-        device = torch.device(block.device())
-        print("Using device = ", device)
-    else:
+def resolve_restart_file(input_path: str) -> Path:
+    candidate = Path(input_path).resolve()
+    if candidate.is_file():
+        if candidate.suffix != ".part":
+            raise FileNotFoundError(f"Expected a .part restart tensor, found {candidate}")
+        return candidate
+
+    if not candidate.is_dir():
+        raise FileNotFoundError(f"Input path does not exist: {candidate}")
+
+    preferred = candidate / "input.part"
+    if preferred.exists():
+        return preferred
+
+    matches = sorted(candidate.glob("*.part"))
+    if not matches:
+        raise FileNotFoundError(f"Could not find any .part restart tensor in {candidate}")
+    if len(matches) > 1:
+        print_ok("Multiple restart tensors found; using", matches[0].name)
+    return matches[0]
+
+
+def default_output_dir(config_file: str) -> Path:
+    return infer_run_dir(config_file) / "forecast_output"
+
+
+def default_input_dir(config_file: str) -> Path:
+    run_dir = infer_run_dir(config_file)
+    matches = sorted(run_dir.glob("era5/*/regridded_*_tensors"))
+    if not matches:
+        raise FileNotFoundError(
+            f"Could not infer ERA5 tensor directory under {run_dir / 'era5'}"
+        )
+    if len(matches) > 1:
+        print_ok("Multiple tensor directories found; using", matches[0])
+    return matches[0]
+
+
+def parse_topography_label(path: Path) -> str:
+    marker = "_topo_"
+    if marker not in path.stem:
+        raise ValueError(f"Topography tensor does not follow '*_topo_<label>.pt': {path}")
+    return path.stem.split(marker, 1)[1]
+
+
+def discover_topography_files(
+    topography_dir: str,
+    required_labels: tuple[str, ...] = TOPO_SEQUENCE,
+) -> dict[str, Path]:
+    topo_root = Path(topography_dir).resolve()
+    topo_paths = sorted(topo_root.glob("*_topo_*.pt"))
+    if not topo_paths:
+        raise FileNotFoundError(f"Could not find any topography tensors in {topo_root}")
+
+    discovered = {parse_topography_label(path): path for path in topo_paths}
+    mapping = {label: discovered[label] for label in required_labels if label in discovered}
+    missing = [label for label in required_labels if label not in mapping]
+    if missing:
+        raise FileNotFoundError(
+            f"Missing topography tensors for {missing} in {topo_root}; found {sorted(mapping)}"
+        )
+    return mapping
+
+
+def default_topography_dir(config_file: str) -> Path:
+    return infer_run_dir(config_file) / "topography" / "products"
+
+
+def precipitation_tracer_indices(config_file: str) -> tuple[int, ...]:
+    with open(config_file, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+
+    species = config.get("species", [])
+    explicit_species = species[1:]
+    indices = []
+    for offset, spec in enumerate(explicit_species):
+        name = str(spec.get("name", ""))
+        if "(p)" in name or ",p)" in name:
+            indices.append(kICY + offset)
+    return tuple(indices)
+
+
+def init_dist(backend: str, requested_device: str = "auto") -> torch.device:
+    import os
+
+    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+    os.environ.setdefault("MASTER_PORT", "29501")
+    os.environ.setdefault("RANK", "0")
+    os.environ.setdefault("WORLD_SIZE", "1")
+    os.environ.setdefault("LOCAL_RANK", os.environ["RANK"])
+
+    local_rank = int(os.environ["LOCAL_RANK"])
+    if requested_device == "cpu":
+        backend = "gloo"
+
+    if backend == "gloo":
+        dist.init_process_group(backend="gloo", init_method="env://")
         device = torch.device("cpu")
+    elif backend == "nccl":
+        if requested_device == "cpu":
+            dist.init_process_group(backend="gloo", init_method="env://")
+            device = torch.device("cpu")
+        else:
+            if not torch.cuda.is_available():
+                raise RuntimeError("NCCL backend requires CUDA")
+            torch.cuda.set_device(local_rank)
+            device = torch.device(f"cuda:{local_rank}")
+            dist.init_process_group(
+                backend="cpu:gloo,cuda:nccl", device_id=device, init_method="env://"
+            )
+    else:
+        raise ValueError(f"Unsupported backend: {backend}")
 
-    block.to(device)
-    block.set_user_output_func(call_user_output)
+    snapy.distributed.set_process_group(dist_c10d._get_default_group())
+    return device
 
-    # thermo model
-    thermo_y = block.module("hydro.eos.thermo")
+
+def create_mesh(config_file: str, output_dir: str, requested_device: str = "auto"):
+    options = MeshOptions.from_yaml(config_file, verbose=False)
+    options.block().output_dir(str(Path(output_dir).resolve()))
+    options.block().basename(Path(config_file).stem)
+
+    if requested_device == "cpu":
+        options.block().layout().backend("gloo")
+
+    backend = options.block().layout().backend()
+    device = init_dist(backend, requested_device=requested_device)
+    print_ok("Using device =", device, "with backend =", backend)
+
+    mesh = Mesh(options)
+    mesh_device = torch.device(mesh.options.device_str() or str(device))
+    mesh.to(mesh_device)
+    for block in mesh.blocks:
+        block.set_user_output_func(call_user_output)
+
+    block0 = mesh.blocks[0]
+    thermo_y = block0.module("hydro.eos.thermo")
     thermo_x = ThermoX(thermo_y.options)
-    thermo_x.to(device)
+    thermo_x.to(mesh_device)
 
     # kinetics model
     op_kinet = KineticsOptions.from_yaml(config_file)
     kinet = Kinetics(op_kinet)
-    kinet.to(device)
+    kinet.to(mesh_device)
 
-    return block, thermo_x, kinet, device
+    return mesh, thermo_x, kinet, mesh_device
 
-def load_ecmwf_input(input_dir: str, index: int = 0,
-                     device: torch.device = torch.device("cpu")):
-    RESTART_FILE = f"{input_dir}/input.part"
-    TOPO_FILE = f"{input_dir}/ws-site1_{index}.pt"
-
-    module = torch.jit.load(RESTART_FILE)
+def load_restart_slice(
+    restart_file: Path,
+    index: int = 0,
+    device: torch.device = torch.device("cpu"),
+):
+    module = torch.jit.load(str(restart_file))
     block_vars = {}
     for name, data in module.named_buffers(recurse=True):
+        if index >= data.shape[0]:
+            raise IndexError(f"Restart index {index} is out of range for {name} with shape {tuple(data.shape)}")
         block_vars[name] = data[index].to(device).to(torch.double)
 
     for name, data in module.named_parameters(recurse=True):
+        if index >= data.shape[0]:
+            raise IndexError(f"Restart index {index} is out of range for {name} with shape {tuple(data.shape)}")
         block_vars[name] = data[index].to(device).to(torch.double)
+    return block_vars
 
+
+def load_topography_module(
+    topo_file: Path,
+    device: torch.device = torch.device("cpu"),
+):
+    module = torch.jit.load(str(topo_file))
     aux_vars = {}
-    module = torch.jit.load(TOPO_FILE)
     for name, data in module.named_buffers(recurse=True):
         aux_vars[name] = data.to(device).to(torch.double)
     for name, data in module.named_parameters(recurse=True):
         aux_vars[name] = data.to(device).to(torch.double)
-    return block_vars, aux_vars
+    return aux_vars
+
+
+def orient_topography(topo_vars: dict[str, torch.Tensor]) -> torch.Tensor:
+    topo = topo_vars["topography"]
+    row0_is_north = topo_vars.get("row0_is_north")
+    if row0_is_north is not None and bool(row0_is_north.item()):
+        topo = torch.flip(topo, dims=(0,))
+    return topo
+
+
+def resample_topography(
+    topo_2d: torch.Tensor,
+    target_shape: tuple[int, int],
+) -> torch.Tensor:
+    if tuple(topo_2d.shape) == target_shape:
+        return topo_2d
+
+    sampled = F.interpolate(
+        topo_2d.unsqueeze(0).unsqueeze(0),
+        size=target_shape,
+        mode="bilinear",
+        align_corners=False,
+    )
+    return sampled.squeeze(0).squeeze(0)
+
+
+def pad_topography(topo_2d: torch.Tensor, nghost: int) -> torch.Tensor:
+    padded = F.pad(
+        topo_2d.unsqueeze(0).unsqueeze(0),
+        pad=(nghost, nghost, nghost, nghost),
+        mode="replicate",
+    )
+    return padded.squeeze(0).squeeze(0).transpose(0, 1).unsqueeze(-1)
+
+
+def build_topography_field(
+    topo_vars: dict[str, torch.Tensor],
+    interior_shape: tuple[int, int],
+    nghost: int,
+) -> torch.Tensor:
+    topo_2d = orient_topography(topo_vars)
+    topo_2d = resample_topography(topo_2d, interior_shape)
+    return pad_topography(topo_2d, nghost)
+
+
+def load_time_series_inputs(
+    restart_file: Path,
+    topography_files: dict[str, Path],
+    device: torch.device,
+):
+    time_slices = [load_restart_slice(restart_file, index=n, device=device) for n in range(4)]
+    topography = {
+        label: load_topography_module(path, device=device)
+        for label, path in topography_files.items()
+    }
+    return time_slices, topography
+
+
+def selected_topography_labels(
+    refinement_mode: str,
+    topography_stage: str | None,
+) -> tuple[str, ...]:
+    if refinement_mode == "staged":
+        return TOPO_SEQUENCE
+    return (topography_stage or TOPO_SEQUENCE[0],)
+
+
+def build_topography_field_for_block(
+    block: MeshBlock,
+    topo_vars: dict[str, torch.Tensor],
+) -> torch.Tensor:
+    coord = block.module("coord")
+    nghost = block.options.coord().nghost()
+    nc2 = coord.buffer("x2v").shape[0]
+    nc3 = coord.buffer("x3v").shape[0]
+    return build_topography_field(
+        topo_vars,
+        (max(nc2 - 2 * nghost, 1), max(nc3 - 2 * nghost, 1)),
+        nghost,
+    )
 
 def equilibrate_initial_fields(block: MeshBlock,
                                thermo_x: ThermoX,
@@ -96,7 +337,77 @@ def equilibrate_initial_fields(block: MeshBlock,
 
     return block_vars
 
+
+def surface_precipitation_mask(topo: torch.Tensor) -> torch.Tensor:
+    surface = torch.zeros_like(topo, dtype=torch.bool)
+    if topo.shape[-1] == 0:
+        return surface
+
+    surface[..., 0] = ~topo[..., 0]
+    surface[..., 1:] = (~topo[..., 1:]) & topo[..., :-1]
+    return surface
+
+
+def remove_surface_precipitation(
+    hydro_w: torch.Tensor,
+    topo: torch.Tensor,
+    precip_indices: tuple[int, ...],
+) -> torch.Tensor:
+    if not precip_indices:
+        return hydro_w
+
+    surface = surface_precipitation_mask(topo)
+    if not torch.any(surface):
+        return hydro_w
+
+    updated = hydro_w.clone()
+    for index in precip_indices:
+        updated[index] = torch.where(surface, torch.zeros_like(updated[index]), updated[index])
+    return updated
+
+
+def next_forcing_time(schedule: ForcingSchedule, available_slices: int) -> float | None:
+    if schedule.next_index >= available_slices:
+        return None
+    return schedule.next_index * schedule.interval_seconds
+
+
+def clone_with_lateral_ghost_zones(
+    state: torch.Tensor,
+    boundary_state: torch.Tensor,
+    nghost: int,
+) -> torch.Tensor:
+    if nghost <= 0:
+        return state
+    if state.shape != boundary_state.shape:
+        raise ValueError(
+            f"State shape mismatch: {tuple(state.shape)} vs {tuple(boundary_state.shape)}"
+        )
+
+    updated = state.clone()
+    updated[..., :nghost, :, :] = boundary_state[..., :nghost, :, :]
+    updated[..., -nghost:, :, :] = boundary_state[..., -nghost:, :, :]
+    updated[..., :, :nghost, :] = boundary_state[..., :, :nghost, :]
+    updated[..., :, -nghost:, :] = boundary_state[..., :, -nghost:, :]
+    return updated
+
+
+def apply_ghost_zone_forcing(
+    mesh: Mesh,
+    block_vars: dict[str, torch.Tensor],
+    target_hydro_u: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    nghost = mesh.blocks[0].options.coord().nghost()
+    block_vars["hydro_u"] = clone_with_lateral_ghost_zones(
+        block_vars["hydro_u"], target_hydro_u, nghost
+    )
+    eos = mesh.blocks[0].module("hydro.eos")
+    block_vars["hydro_w"] = eos.compute("U->W", (block_vars["hydro_u"],))
+    return block_vars
+
 def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
+                        eos,
+                        precip_indices: tuple[int, ...],
                         dt: float, 
                         tau: float = 100.,
                         cooling_rate: float = 2. / 86400.):
@@ -118,25 +429,43 @@ def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
     # surface_level = torch.zeros_like(topo)
     # surface_level[:,:,1:] = topo[:,:,:-1] - topo[:,:,1:]
 
-def run_simulation(block: MeshBlock, 
+    updated_hydro_w = remove_surface_precipitation(w, topo, precip_indices)
+    if updated_hydro_w.data_ptr() != w.data_ptr():
+        block_vars["hydro_w"] = updated_hydro_w
+        block_vars["hydro_u"] = eos.compute("W->U", (updated_hydro_w,))
+
+def run_simulation(mesh: Mesh,
                    thermo_x: ThermoX,
                    kinet: Kinetics,
-                   block_vars: dict[str, torch.Tensor],
+                   mesh_vars: list[dict[str, torch.Tensor]],
                    current_time: float,
-                   duration: float):
-    eos = block.module("hydro.eos")
-    thermo_y = block.module("hydro.eos.thermo")
-    block.options.intg().tlim(current_time + duration)
+                   duration: float,
+                   precip_indices: tuple[int, ...],
+                   forcing_schedule: ForcingSchedule | None = None,
+                   forcing_states: list[torch.Tensor] | None = None):
+    block0 = mesh.blocks[0]
+    block_vars = mesh_vars[0]
+    eos = block0.module("hydro.eos")
+    thermo_y = block0.module("hydro.eos.thermo")
+    intg = mesh.module("block0.intg")
+    cycle = block0.cycle()
+    block0.options.intg().tlim(current_time + duration)
 
-    while not block.intg.stop(block.inc_cycle(), current_time):
-        dt = block.max_time_step(block_vars)
-        block.print_cycle_info(block_vars, current_time, dt)
+    while not intg.stop(cycle, current_time):
+        cycle += 1
+        mesh.set_cycle(cycle)
+        dt = mesh.max_time_step(mesh_vars)
+        if forcing_schedule is not None and forcing_states is not None:
+            refresh_time = next_forcing_time(forcing_schedule, len(forcing_states))
+            if refresh_time is not None:
+                dt = min(dt, max(refresh_time - current_time, 0.0))
+        mesh.print_cycle_info(mesh_vars, current_time, dt)
 
-        for stage in range(len(block.intg.stages)):
-            block.forward(block_vars, dt, stage)
-            add_frigate_forcing(block_vars, dt)
+        for stage in range(len(intg.stages)):
+            mesh.forward(mesh_vars, dt, stage)
+            add_frigate_forcing(block_vars, eos, precip_indices, dt)
 
-        err = block.check_redo(block_vars)
+        err = mesh.check_redo(mesh_vars)
         if err > 0:
             continue  # redo current step
         if err < 0:
@@ -148,22 +477,33 @@ def run_simulation(block: MeshBlock,
         block_vars["hydro_u"][kICY:] += del_rho
 
         current_time += dt
-        block.make_outputs(block_vars, current_time)
+        mesh.make_outputs(mesh_vars, current_time)
+        if forcing_schedule is not None and forcing_states is not None:
+            refresh_time = next_forcing_time(forcing_schedule, len(forcing_states))
+            if refresh_time is not None and current_time >= refresh_time - 1.0e-9:
+                forcing_index = min(forcing_schedule.next_index, len(forcing_states) - 1)
+                apply_ghost_zone_forcing(mesh, block_vars, forcing_states[forcing_index])
+                forcing_schedule = ForcingSchedule(
+                    interval_seconds=forcing_schedule.interval_seconds,
+                    next_index=forcing_schedule.next_index + 1,
+                )
 
-    return block_vars, current_time
+    return mesh_vars, current_time
 
-def nudge_from_ecmwf(block: MeshBlock,
+def nudge_from_ecmwf(mesh: Mesh,
                      thermo_x: ThermoX,
                      kinet: Kinetics,
                      block_vars: dict[str, torch.Tensor],
-                     aux_vars: dict[str, torch.Tensor],
-                     index: int = 0):
+                     target_hydro_u: torch.Tensor,
+                     precip_indices: tuple[int, ...],
+                     index: int = 0,
+                     refinement_level: int = 0):
     # downsampling to interpolated ECMWF resolution
     device = block_vars["hydro_u"].device
-    nghost = block.options.coord().nghost()
+    nghost = mesh.blocks[0].options.coord().nghost()
     hydro_u = block_vars["hydro_u"].clone()
 
-    for n in range(min(index, 2)):
+    for _ in range(refinement_level):
         u_int = hydro_u[..., nghost:-nghost, nghost:-nghost, :]
         u_int_coarsened = coarsen_spatial(u_int)
         dims = list(hydro_u.shape)
@@ -173,10 +513,10 @@ def nudge_from_ecmwf(block: MeshBlock,
         hydro_u[..., nghost:-nghost, nghost:-nghost, :] = u_int_coarsened
 
     # read nudge data from ECMWF input
-    du = aux_vars[f"hydro_u/{index}"] - hydro_u
+    du = target_hydro_u - hydro_u
 
     # upsample back to original resolution
-    for n in range(min(index, 2)):
+    for _ in range(refinement_level):
         du_refined = refine_spatial(du, "area")
         du = du_refined[..., nghost:-nghost, nghost:-nghost, :]
 
@@ -184,10 +524,12 @@ def nudge_from_ecmwf(block: MeshBlock,
     block_vars["hydro_u"] += du
 
     # run hydrostatic adjustment for 600 seconds after nudging
-    block.options.hydro().disable_flux_x2(True)
-    block.options.hydro().disable_flux_x3(True)
-    block_vars, _ = run_simulation(block, thermo_x, kinet,
-                                   block_vars, 0., 600.)
+    mesh.blocks[0].options.hydro().disable_flux_x2(True)
+    mesh.blocks[0].options.hydro().disable_flux_x3(True)
+    mesh_vars, _ = run_simulation(
+        mesh, thermo_x, kinet, [block_vars], 0.0, 600.0, precip_indices
+    )
+    block_vars = mesh_vars[0]
 
     print_ok("Nudging from ECMWF data at index ", index, " completed.\n",
              "Min/Max density change = ", du[kIDN].min().item(), "/",
@@ -203,55 +545,100 @@ def nudge_from_ecmwf(block: MeshBlock,
              "Min/Max tracer change = ", du[kICY:].min().item(), "/",
              du[kICY:].max().item())
 
-    block.options.hydro().disable_flux_x2(False)
-    block.options.hydro().disable_flux_x3(False)
+    mesh.blocks[0].options.hydro().disable_flux_x2(False)
+    mesh.blocks[0].options.hydro().disable_flux_x3(False)
 
     return block_vars
 
-def run_spinup(block: MeshBlock, 
+def run_spinup(mesh: Mesh, 
                thermo_x: ThermoX,
                kinet: Kinetics,
                block_vars: dict[str, torch.Tensor],
-               aux_vars: dict[str, torch.Tensor],
+               ecmwf_hydro_u: list[torch.Tensor],
+               stage_topography: list[dict[str, torch.Tensor]],
                current_time: float,
-               config_file: str):
-    for output in block.options.outputs():
+               config_file: str,
+               chunk_duration: float,
+               precip_indices: tuple[int, ...]):
+    for output in mesh.blocks[0].options.outputs():
         output.dt(3600.)
 
-    duration = 21600.  # seconds (6 hours)
     for chunk in range(1, 4):
         start_clock = time.time()
-        block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                                  block_vars, current_time, duration)
-        if chunk < 3:
-            topo = aux_vars[f"topo/{chunk}"]
-            block, thermo_x, kinet, block_vars = refine_simulation(
-                    block, block_vars, topo, config_file)
-        else:
-            pass
-            #for output in block.options.outputs():
-            #    output.super_resolution(True)
+        mesh_vars, current_time = run_simulation(
+            mesh, thermo_x, kinet, [block_vars], current_time, chunk_duration, precip_indices
+        )
+        block_vars = mesh_vars[0]
+        mesh, thermo_x, kinet, block_vars = refine_simulation(
+            mesh, block_vars, stage_topography[chunk], config_file
+        )
 
-        block_vars = nudge_from_ecmwf(block, thermo_x, kinet,
-                                      block_vars, aux_vars, chunk)
+        block_vars = nudge_from_ecmwf(mesh, thermo_x, kinet,
+                                      block_vars, ecmwf_hydro_u[chunk], precip_indices, chunk,
+                                      refinement_level=chunk)
         end_clock = time.time()
         print_ok("Completed chunk ", chunk, "/ 3 for the day.\n",
                  "Current time = ", current_time, " seconds.\n",
                  "Elapsed time = ", end_clock - start_clock, " seconds.\n")
         print_ok("Refined variable shape = ", block_vars["hydro_w"].shape)
 
-    return block, thermo_x, kinet, block_vars, current_time
+    return mesh, thermo_x, kinet, block_vars, current_time
 
-def refine_simulation(block: MeshBlock,
+
+def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
+    old_block = mesh.blocks[0]
+    file_numbers, next_times = [], []
+    for out in old_block.get_outputs():
+        file_numbers.append(out.file_number)
+        next_times.append(out.next_time)
+
+    coord = old_block.module("coord")
+    nghost = old_block.options.coord().nghost()
+    current_nx2 = max(coord.buffer("x2v").shape[0] - 2 * nghost, 1)
+    current_nx3 = max(coord.buffer("x3v").shape[0] - 2 * nghost, 1)
+
+    with open(config_file, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    base_nx2 = int(config["geometry"]["cells"]["nx2"])
+    base_nx3 = int(config["geometry"]["cells"]["nx3"])
+    config["geometry"]["cells"]["nx2"] = current_nx2 * 2 if current_nx2 > 1 else 1
+    config["geometry"]["cells"]["nx3"] = current_nx3 * 2 if current_nx3 > 1 else 1
+    next_nx2 = int(config["geometry"]["cells"]["nx2"])
+    next_nx3 = int(config["geometry"]["cells"]["nx3"])
+    refinement_factor = max(next_nx2 / max(base_nx2, 1), next_nx3 / max(base_nx3, 1))
+    config["integration"]["implicit-scheme"] = implicit_scheme_for_refinement_factor(
+        refinement_factor
+    )
+
+    refined_config = (
+        Path(old_block.options.output_dir()) / f"{Path(config_file).stem}.refined.yaml"
+    )
+    refined_config.parent.mkdir(parents=True, exist_ok=True)
+    refined_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    options = MeshOptions.from_yaml(str(refined_config), verbose=False)
+    options.block().output_dir(old_block.options.output_dir())
+    options.block().basename(old_block.options.basename())
+    options.block().layout().backend(old_block.options.layout().backend())
+    new_mesh = Mesh(options)
+    new_mesh.to(device)
+    for block in new_mesh.blocks:
+        block.set_user_output_func(call_user_output)
+    for n, out in enumerate(new_mesh.blocks[0].get_outputs()):
+        out.file_number = file_numbers[n]
+        out.next_time = next_times[n]
+    return new_mesh
+
+
+def refine_simulation(mesh: Mesh,
                       block_vars: dict[str, torch.Tensor],
-                      topo: torch.Tensor,
+                      topo_vars: dict[str, torch.Tensor],
                       config_file: str):
     device = block_vars["hydro_u"].device
 
     # refined meshblock
-    block = refine_meshblock(block)
-    block.to(device)
-    block.set_user_output_func(call_user_output)
+    mesh = refine_mesh(mesh, device, config_file)
+    block = mesh.blocks[0]
 
     # thermo model
     thermo_y = block.module("hydro.eos.thermo")
@@ -265,24 +652,253 @@ def refine_simulation(block: MeshBlock,
 
     # refine variables
     nghost = block.options.coord().nghost()
-    block_vars["hydro_u"] = conservative_refine(block_vars["hydro_u"], nghost)
+    refined_hydro_u = conservative_refine(block_vars["hydro_u"], nghost)
 
     # topography
-    coord = block.module("coord")
-    x3v, x2v, x1v = torch.meshgrid(
-        coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
+    topo_mask = (
+        torch.meshgrid(
+            block.module("coord").buffer("x3v"),
+            block.module("coord").buffer("x2v"),
+            block.module("coord").buffer("x1v"),
+            indexing="ij",
+        )[2]
+        < build_topography_field_for_block(block, topo_vars)
     )
-    block_vars["topo"] = x1v < topo
 
     # eos model
     eos = block.module("hydro.eos")
-    block_vars["hydro_w"] = eos.compute("U->W", (block_vars["hydro_u"],))
-    block_vars, _ = block.initialize(block_vars)
+    hydro_w = eos.compute("U->W", (refined_hydro_u,))
+    mesh_vars, _ = mesh.initialize([{"hydro_w": hydro_w}])
+    mesh_vars[0]["topo"] = topo_mask
+    block_vars = mesh_vars[0]
 
-    return block, thermo_x, kinet, block_vars
+    return mesh, thermo_x, kinet, block_vars
+
+
+def prepare_initial_state(
+    mesh: Mesh,
+    thermo_x: ThermoX,
+    block_vars: dict[str, torch.Tensor],
+    topo_vars: dict[str, torch.Tensor],
+) -> tuple[dict[str, torch.Tensor], float]:
+    block = mesh.blocks[0]
+    block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
+    x1v = torch.meshgrid(
+        block.module("coord").buffer("x3v"),
+        block.module("coord").buffer("x2v"),
+        block.module("coord").buffer("x1v"),
+        indexing="ij",
+    )[2]
+    topo0 = build_topography_field_for_block(block, topo_vars)
+    mesh_vars, current_time = mesh.initialize([{"hydro_w": block_vars["hydro_w"]}])
+    block_vars = mesh_vars[0]
+    block_vars["topo"] = x1v < topo0
+    return block_vars, current_time
+
+
+def log_loaded_inputs(
+    block_vars: dict[str, torch.Tensor],
+    stage_topography: list[dict[str, torch.Tensor]],
+) -> None:
+    print_ok("Block variables loaded from ECMWF input:")
+    for key, data in block_vars.items():
+        print(f"  - {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
+
+    print_ok("Topography stages:")
+    labels = TOPO_SEQUENCE if len(stage_topography) == len(TOPO_SEQUENCE) else (TOPO_SEQUENCE[0],)
+    for label, topo_vars in zip(labels, stage_topography):
+        print(f"  - {label}: raw shape = {tuple(topo_vars['topography'].shape)}")
+
+
+def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
+    restart_file = resolve_restart_file(args.input_dir)
+    topography_root = (
+        Path(args.topography_dir).resolve()
+        if args.topography_dir is not None
+        else default_topography_dir(args.config)
+    )
+    topography_files = discover_topography_files(
+        str(topography_root),
+        required_labels=selected_topography_labels(args.refinement_mode, args.topography_stage),
+    )
+    precip_indices = precipitation_tracer_indices(args.config)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    mesh, thermo_x, kinet, device = create_mesh(
+        args.config, args.output_dir, requested_device=args.device
+    )
+    time_slices, topography_modules = load_time_series_inputs(
+        restart_file, topography_files, device
+    )
+    block_vars = time_slices[0]
+    block = mesh.blocks[0]
+    eos = block.module("hydro.eos")
+    ecmwf_hydro_u = [eos.compute("W->U", (slice_vars["hydro_w"],)) for slice_vars in time_slices]
+    if args.refinement_mode == "staged":
+        stage_topography = [topography_modules[label] for label in TOPO_SEQUENCE]
+    else:
+        stage_topography = [topography_modules[args.topography_stage]]
+    log_loaded_inputs(block_vars, stage_topography)
+    block_vars, current_time = prepare_initial_state(
+        mesh, thermo_x, block_vars, stage_topography[0]
+    )
+
+    return ForecastContext(
+        mesh=mesh,
+        thermo_x=thermo_x,
+        kinet=kinet,
+        device=device,
+        block_vars=block_vars,
+        ecmwf_hydro_u=ecmwf_hydro_u,
+        stage_topography=stage_topography,
+        precip_indices=precip_indices,
+        current_time=current_time,
+    )
+
+
+def with_disabled_lateral_fluxes(block: MeshBlock):
+    block.options.hydro().disable_flux_x2(True)
+    block.options.hydro().disable_flux_x3(True)
+
+
+def with_enabled_lateral_fluxes(block: MeshBlock):
+    block.options.hydro().disable_flux_x2(False)
+    block.options.hydro().disable_flux_x3(False)
+
+
+def run_hydrostatic_adjustment(ctx: ForecastContext, duration: float) -> None:
+    block = ctx.mesh.blocks[0]
+    start_clock = time.time()
+    with_disabled_lateral_fluxes(block)
+    ctx.mesh.make_outputs([ctx.block_vars], ctx.current_time)
+    mesh_vars, ctx.current_time = run_simulation(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        [ctx.block_vars],
+        ctx.current_time,
+        duration,
+        ctx.precip_indices,
+    )
+    ctx.block_vars = mesh_vars[0]
+    ctx.current_time = 0.0
+    with_enabled_lateral_fluxes(block)
+    end_clock = time.time()
+    print_ok(
+        "Step 1 (hydrostatic adjustment) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
+def run_spinup_stage(ctx: ForecastContext, config_file: str, chunk_duration: float) -> None:
+    start_clock = time.time()
+    (
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        ctx.block_vars,
+        ctx.current_time,
+    ) = run_spinup(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        ctx.block_vars,
+        ctx.ecmwf_hydro_u,
+        ctx.stage_topography,
+        ctx.current_time,
+        config_file,
+        chunk_duration,
+        ctx.precip_indices,
+    )
+    end_clock = time.time()
+    print_ok(
+        "Step 2 (spinup) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
+def run_prediction_stage(ctx: ForecastContext, duration: float) -> None:
+    start_clock = time.time()
+    mesh_vars, ctx.current_time = run_simulation(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        [ctx.block_vars],
+        ctx.current_time,
+        duration,
+        ctx.precip_indices,
+    )
+    ctx.block_vars = mesh_vars[0]
+    end_clock = time.time()
+    print_ok(
+        "Step 3 (prediction) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
+def run_prediction_stage_with_ghost_forcing(
+    ctx: ForecastContext,
+    duration: float,
+    forcing_interval_seconds: float,
+) -> None:
+    start_clock = time.time()
+    mesh_vars, ctx.current_time = run_simulation(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        [ctx.block_vars],
+        ctx.current_time,
+        duration,
+        ctx.precip_indices,
+        forcing_schedule=ForcingSchedule(interval_seconds=forcing_interval_seconds),
+        forcing_states=ctx.ecmwf_hydro_u,
+    )
+    ctx.block_vars = mesh_vars[0]
+    end_clock = time.time()
+    print_ok(
+        "Step 2 (low-resolution prediction with ghost forcing) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
+def finalize_forecast(ctx: ForecastContext) -> None:
+    ctx.mesh.finalize([ctx.block_vars], ctx.current_time)
+    print_ok("Simulation finalized at time = ", ctx.current_time, " seconds.")
+
+
+def run_forecast(args: argparse.Namespace) -> None:
+    ctx = None
+    try:
+        ctx = build_forecast_context(args)
+        run_hydrostatic_adjustment(ctx, args.hydrostatic_duration)
+        if args.refinement_mode == "staged":
+            run_spinup_stage(ctx, args.config, args.spinup_chunk_duration)
+            run_prediction_stage(ctx, args.prediction_duration)
+        elif args.forcing_mode == "ghost":
+            run_prediction_stage_with_ghost_forcing(
+                ctx, args.prediction_duration, args.forcing_interval_seconds
+            )
+        else:
+            run_prediction_stage(ctx, args.prediction_duration)
+        finalize_forecast(ctx)
+    finally:
+        if ctx is not None:
+            try:
+                ctx.mesh.finalize([ctx.block_vars], ctx.current_time)
+            except Exception:
+                pass
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
 
 def main():
-    # parse arguments
     parser = argparse.ArgumentParser(description="Run hydrodynamic simulation.")
     parser.add_argument(
         "-c", "--config", type=str,
@@ -290,99 +906,62 @@ def main():
     )
     parser.add_argument(
         "-i", "--input_dir", type=str,
-        default='./input', help="input directory."
+        default=None, help="directory containing regridded ERA5 tensor .part files."
     )
     parser.add_argument(
         "-o", "--output_dir", type=str,
-        default='./output', help="output directory."
+        default=None, help="forecast output directory."
+    )
+    parser.add_argument(
+        "--topography-dir", type=str,
+        default=None, help="directory containing *_topo_<resolution>.pt files."
+    )
+    parser.add_argument(
+        "--hydrostatic-duration", type=float,
+        default=600.0, help="duration in seconds for the initial hydrostatic adjustment."
+    )
+    parser.add_argument(
+        "--spinup-chunk-duration", type=float,
+        default=21600.0, help="duration in seconds for each ECMWF-synced spinup chunk."
+    )
+    parser.add_argument(
+        "--refinement-mode", type=str,
+        default="staged", choices=["staged", "none"],
+        help="use staged refinement or stay on a single mesh for the full run."
+    )
+    parser.add_argument(
+        "--forcing-mode", type=str,
+        default="nudge", choices=["nudge", "ghost"],
+        help="apply whole-domain nudging or refresh lateral ghost zones from ERA5."
+    )
+    parser.add_argument(
+        "--forcing-interval-seconds", type=float,
+        default=21600.0, help="interval between ERA5 boundary updates in seconds."
+    )
+    parser.add_argument(
+        "--topography-stage", type=str,
+        default=None, choices=list(TOPO_SEQUENCE),
+        help="topography label to use when refinement is disabled."
+    )
+    parser.add_argument(
+        "--prediction-duration", type=float,
+        default=7 * 86400.0, help="duration in seconds for the final forecast segment."
+    )
+    parser.add_argument(
+        "--device", type=str,
+        default="auto", choices=["auto", "cpu", "cuda"],
+        help="execution device override."
     )
     args = parser.parse_args()
 
-    # load and compute block variables
-    block, thermo_x, kinet, device = create_block(args.config)
-    block_vars, aux_vars = load_ecmwf_input(args.input_dir, index=0, device=device)
-    print_ok("Block variables loaded from ECMWF input:")
-    for key, data in block_vars.items():
-        print(f"  - {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
+    if args.input_dir is None:
+        args.input_dir = str(default_input_dir(args.config))
+    if args.output_dir is None:
+        args.output_dir = str(default_output_dir(args.config))
+    required_topography = selected_topography_labels(args.refinement_mode, args.topography_stage)
+    args.topography_stage = required_topography[0]
 
-    # load and compute auxiliary variables
-    ng = 3
-    eos = block.module("hydro.eos")
-    for n in range(1, 4):
-        bvar, avar = load_ecmwf_input(args.input_dir, index=n, device=device)
-        aux_vars[f"hydro_u/{n}"] = eos.compute("W->U", (bvar["hydro_w"],))
-        topo = avar["topography"].unsqueeze(0).unsqueeze(0)
-        topo = F.pad(topo, pad=(ng, ng, ng, ng), mode="replicate")
-        topo = topo.squeeze(0).squeeze(0).unsqueeze(-1)
-        aux_vars[f"topo/{n}"] = topo
-
-    print_ok("Auxiliary variables loaded from ECMWF input:")
-    for key, data in aux_vars.items():
-        print(f"  - {key}: shape = {data.shape}, dtype = {data.dtype}, device = {data.device}")
-
-    # initialize model
-    block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
-    coord = block.module("coord")
-    x3v, x2v, x1v = torch.meshgrid(
-        coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
-    )
-    topo = aux_vars["topography"].unsqueeze(0).unsqueeze(0)
-    topo = F.pad(topo, pad=(ng, ng, ng, ng), mode="replicate")
-    topo = topo.squeeze(0).squeeze(0).unsqueeze(-1)
-    block_vars["topo"] = x1v < topo
-    del aux_vars["topography"]
-    block_vars, current_time = block.initialize(block_vars)
-
-    ### Step 1: Run hydrostatic adjustment for 600 seconds ###
-    print(block_vars.keys())
-    start_clock = time.time()
-
-    block.options.hydro().disable_flux_x2(True)
-    block.options.hydro().disable_flux_x3(True)
-
-    block.make_outputs(block_vars, current_time)
-    block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                              block_vars, current_time, 600.)
-
-    current_time = 0.
-    block.options.hydro().disable_flux_x2(False)
-    block.options.hydro().disable_flux_x3(False)
-
-    end_clock = time.time()
-    print_ok("Step 1 (hydrostatic adjustment) completed.\n",
-          "Current time = ", current_time, " seconds.\n",
-          "Current cycle = ", block.cycle(), ".\n",
-          "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-
-    ### Step 2: Run Spin-up for 1 day with increasing resolution ###
-    start_clock = end_clock
-
-    block, thermo_x, kinet, block_vars, current_time = run_spinup(
-            block, thermo_x, kinet, block_vars, aux_vars,
-            current_time, args.config)
-
-    end_clock = time.time()
-    print_ok("Step 2 (spinup) completed.\n",
-          "Current time = ", current_time, " seconds.\n",
-          "Current cycle = ", block.cycle(), ".\n",
-          "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-
-    ### Step 3: Run prediction for the next 32 hours ###
-    start_clock = end_clock
-    #duration = 32 * 3600.  # seconds 
-    duration = 7 * 86400.  # seconds 
-    block_vars, current_time = run_simulation(block, thermo_x, kinet,
-                                              block_vars, current_time, duration)
-
-    end_clock = time.time()
-    print_ok("Step 3 (prediction) completed.\n",
-          "Current time = ", current_time, " seconds.\n",
-          "Current cycle = ", block.cycle(), ".\n",
-          "Elapsed time = ", end_clock - start_clock, " seconds.\n")
-
-    ### Step 4: Clean up and finalize ###
-    block.finalize(block_vars, current_time)
-    print_ok("Simulation finalized at time = ", current_time, " seconds.")
+    run_forecast(args)
 
 if __name__ == "__main__":
     main()

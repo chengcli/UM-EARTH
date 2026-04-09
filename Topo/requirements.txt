@@ -1,5 +1,0 @@
-numpy
-rasterio
-requests
-torch
-scipy

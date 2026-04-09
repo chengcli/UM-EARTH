@@ -29,11 +29,18 @@ import logging
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 import tempfile
-from ecmwf_utils import (
-        validate_region_bounds, 
+try:
+    from .ecmwf_utils import (
+        validate_region_bounds,
         validate_pressure_levels,
-        validate_variable_names
-        )
+        validate_variable_names,
+    )
+except ImportError:
+    from ecmwf_utils import (
+        validate_region_bounds,
+        validate_pressure_levels,
+        validate_variable_names,
+    )
 
 try:
     import cdsapi

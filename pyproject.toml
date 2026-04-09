@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=65.5", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "um-earth"
+version = "0.1.0"
+description = "Regional weather forecast pipeline built on ECMWF preprocessing and snapy."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "matplotlib",
+  "PyYAML",
+]
+
+[project.scripts]
+um-earth = "um_earth.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["um_earth*"]

@@ -258,6 +258,30 @@ class TestCalculateLatLonLimits(unittest.TestCase):
         # Check ordering
         self.assertLess(latmin, latmax)
         self.assertLess(lonmin, lonmax)
+
+
+class TestFetchERA5Data(unittest.TestCase):
+    """Test fetch command construction."""
+
+    @patch("fetch_era5_pipeline.subprocess.run")
+    def test_fetch_era5_data_passes_times(self, mock_run):
+        fetch_era5_pipeline.fetch_era5_data(
+            30.0,
+            31.0,
+            -110.0,
+            -109.0,
+            "2024-01-01",
+            "2024-01-01",
+            "/tmp/out",
+            times=["00:00", "06:00", "12:00", "18:00"],
+        )
+
+        self.assertEqual(mock_run.call_count, 2)
+        first_cmd = mock_run.call_args_list[0].args[0]
+        second_cmd = mock_run.call_args_list[1].args[0]
+        self.assertIn("--times", first_cmd)
+        self.assertEqual(first_cmd[-4:], ["00:00", "06:00", "12:00", "18:00"])
+        self.assertIn("--times", second_cmd)
         
         # Check that center is within bounds
         self.assertLess(latmin, 30.0)
@@ -456,6 +480,24 @@ class TestAddBufferZone(unittest.TestCase):
         # Check that longitude stays within bounds
         self.assertGreaterEqual(buf_lonmin, -180.0)
         self.assertLessEqual(buf_lonmax, 180.0)
+
+
+class TestSnapBoundsToEra5Grid(unittest.TestCase):
+    """Test snapping buffered bounds outward to the ERA5 0.25 degree grid."""
+
+    def test_snap_bounds_outward(self):
+        result = fetch_era5_pipeline.snap_bounds_to_era5_grid(
+            32.76, 34.19, -107.26, -105.83
+        )
+
+        self.assertEqual(result, (32.75, 34.25, -107.5, -105.75))
+
+    def test_snap_preserves_existing_grid_alignment(self):
+        result = fetch_era5_pipeline.snap_bounds_to_era5_grid(
+            33.0, 34.25, -107.25, -106.0
+        )
+
+        self.assertEqual(result, (33.0, 34.25, -107.25, -106.0))
 
 
 class TestFormatLatLonString(unittest.TestCase):

@@ -38,17 +38,15 @@ Examples:
 Requirements:
     - ECMWF CDS API credentials configured (~/.cdsapirc or CDSAPI_KEY env var)
     - Python packages: cdsapi, xarray, netCDF4, numpy, scipy, PyYAML, torch
-    - See ecmwf_api/requirements.txt for complete list
+    - See um_earth/ecmwf_api/requirements.txt for complete list
 
 For setup instructions, see:
-    - ecmwf_api/README_ECMWF.md
+    - um_earth/ecmwf_api/README_ECMWF.md
     - README.md in location directories
 """
 
 import argparse
-import csv
 import glob
-import io
 import os
 import subprocess
 import sys
@@ -57,9 +55,11 @@ import yaml
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# Add parent directory to path for importing ECMWF modules
+from um_earth.regions import load_region
+
+# Use the package-local ECMWF implementation.
 SCRIPT_DIR = Path(__file__).parent
-ECMWF_DIR = SCRIPT_DIR / "ecmwf_api"
+ECMWF_DIR = SCRIPT_DIR / "um_earth" / "ecmwf_api"
 sys.path.insert(0, str(ECMWF_DIR))
 
 def date_range_yyyymmdd(start_date: str, end_date: str) -> list[str]:
@@ -73,44 +73,6 @@ def date_range_yyyymmdd(start_date: str, end_date: str) -> list[str]:
         (start + timedelta(days=i)).strftime("%Y%m%d")
         for i in range((end - start).days + 1)
     ]
-
-def load_locations(locations_file):
-    """Load location definitions from CSV file."""
-    locations = {}
-    with open(locations_file, 'r') as f:
-        # Skip comment lines
-        lines = [line for line in f if not line.strip().startswith('#')]
-        
-    # Parse CSV from non-comment lines (comma-delimited)
-    csv_data = io.StringIO(''.join(lines))
-    reader = csv.DictReader(csv_data, delimiter=',', skipinitialspace=True)
-    
-    for row in reader:
-        # Extract bounding box coordinates
-        latmin = float(row['Latmin'])
-        latmax = float(row['Latmax'])
-        lonmin = float(row['Lonmin'])
-        lonmax = float(row['Lonmax'])
-        
-        # Create polygon from bounding box (counterclockwise rectangle)
-        polygon = [
-            [lonmin, latmin],  # SW corner
-            [lonmin, latmax],  # NW corner
-            [lonmax, latmax],  # NE corner
-            [lonmax, latmin],  # SE corner
-        ]
-        
-        # Use Name field as location_id and Description as the display name
-        location_id = row['Name']
-        name = row['Description']
-        
-        locations[location_id] = {
-            'name': name,
-            'polygon': polygon
-        }
-    
-    return locations
-
 
 def check_cds_credentials():
     """Check if CDS API credentials are configured."""
@@ -314,7 +276,12 @@ def main():
     
     parser.add_argument(
         'location_id',
+        nargs='?',
         help="Location identifier (e.g., 'ann-arbor', 'white-sands')"
+    )
+    parser.add_argument(
+        "--region-kml",
+        help="Path to a KML region definition. If provided, this becomes the canonical region source."
     )
     
     parser.add_argument(
@@ -350,6 +317,12 @@ def main():
         default=3600,
         help="Timeout for each step in seconds (default: 3600)"
     )
+    parser.add_argument(
+        "--times",
+        nargs="+",
+        default=None,
+        help="Specific UTC times to fetch in Step 1 (for example: 00:00 06:00 12:00 18:00)"
+    )
     
     parser.add_argument(
         '--locations-file',
@@ -373,25 +346,22 @@ def main():
     
     args = parser.parse_args()
     
-    location_id = args.location_id
-    
     # Resolve locations file path
     locations_file = Path(args.locations_file)
     if not locations_file.is_absolute():
         locations_file = SCRIPT_DIR / locations_file
-    
-    # Load locations to get location name
+
     try:
-        locations = load_locations(locations_file)
-        if location_id not in locations:
-            available = ', '.join(sorted(locations.keys()))
-            print(f"ERROR: Location '{location_id}' not found.")
-            print(f"Available locations: {available}")
-            return 1
-        location_name = locations[location_id]['name']
+        region = load_region(
+            region_kml=args.region_kml,
+            location_id=args.location_id,
+            locations_file=locations_file,
+        )
     except Exception as e:
-        print(f"ERROR: Failed to load locations file: {e}")
+        print(f"ERROR: Failed to load region definition: {e}")
         return 1
+    location_id = region.region_id
+    location_name = region.name
     
     # Resolve config path
     if args.config:
@@ -448,6 +418,8 @@ def main():
     print(f"Timeout per step: {args.timeout} seconds ({args.timeout/60:.1f} minutes)")
     print(f"Will start from: Step {args.start_from}")
     print(f"Will stop after: Step {args.stop_after}")
+    if args.times:
+        print(f"Requested ERA5 times: {', '.join(args.times)}")
     print()
 
     # Check credentials before starting
@@ -468,7 +440,8 @@ def main():
         step1_success = run_step_with_timeout(
             "Step 1: Fetch ERA5 Data",
             ["python3", str(fetch_script), str(config_path), 
-             "--output-base", str(output_base)],
+             "--output-base", str(output_base),
+             *(["--times", *args.times] if args.times else [])],
             timeout_seconds=args.timeout
         )
         

@@ -443,7 +443,7 @@ Examples:
   python generate_all_plots.py ws-site1-2026-02-08/ --threads 4
   
   # Process all time indices with topography overlay using 8 threads
-  python generate_all_plots.py ws-site1-2026-02-08/ --all-times --threads 8 --topo-dir Topo/Data/Split/ws-site1/ --location ws-site1
+  python generate_all_plots.py ws-site1-2026-02-08/ --all-times --threads 8 --topo-dir data/topography/split/ws-site1/ --location ws-site1
   
   # Specify output directory and PDF name
   python generate_all_plots.py ws-site1-2026-02-08/ -d output/ -p results.pdf --threads 4
