@@ -88,6 +88,23 @@ def build_parser() -> argparse.ArgumentParser:
     diag_plot.add_argument("--all-times", action="store_true")
     diag_plot.set_defaults(handler=handle_diagnostics_plot)
 
+    diag_extract_updrafts = diag_sub.add_parser(
+        "extract-updrafts", help="Extract updraft segments into CSV"
+    )
+    diag_extract_updrafts.add_argument("input_dir")
+    diag_extract_updrafts.add_argument("--output")
+    diag_extract_updrafts.add_argument("--threshold", type=float, default=1.0)
+    diag_extract_updrafts.set_defaults(handler=handle_diagnostics_extract_updrafts)
+
+    diag_plot_updrafts = diag_sub.add_parser(
+        "plot-updrafts", help="Plot updraft locations over topography"
+    )
+    diag_plot_updrafts.add_argument("csv_path")
+    diag_plot_updrafts.add_argument("--topo-file", required=True)
+    diag_plot_updrafts.add_argument("--input-dir", required=True)
+    diag_plot_updrafts.add_argument("--output")
+    diag_plot_updrafts.set_defaults(handler=handle_diagnostics_plot_updrafts)
+
     pipe_p = sub.add_parser("pipeline", help="Run the full pipeline")
     pipe_sub = pipe_p.add_subparsers(dest="pipeline_command", required=True)
     pipe_run = pipe_sub.add_parser("run", help="Run config, topo, init, and optionally forecast")
@@ -229,6 +246,24 @@ def handle_diagnostics_plot(args: argparse.Namespace) -> int:
         cmd.extend(["--location", args.location])
     if args.all_times:
         cmd.append("--all-times")
+    return _run_python(script, cmd)
+
+
+def handle_diagnostics_extract_updrafts(args: argparse.Namespace) -> int:
+    script = PROJECT_ROOT / "um_earth" / "diagnostics" / "extract_updrafts.py"
+    cmd = [args.input_dir]
+    if args.output:
+        cmd.extend(["--output", args.output])
+    if args.threshold != 1.0:
+        cmd.extend(["--threshold", str(args.threshold)])
+    return _run_python(script, cmd)
+
+
+def handle_diagnostics_plot_updrafts(args: argparse.Namespace) -> int:
+    script = PROJECT_ROOT / "um_earth" / "diagnostics" / "plot_updrafts_on_topography.py"
+    cmd = [args.csv_path, "--topo-file", args.topo_file, "--input-dir", args.input_dir]
+    if args.output:
+        cmd.extend(["--output", args.output])
     return _run_python(script, cmd)
 
 
