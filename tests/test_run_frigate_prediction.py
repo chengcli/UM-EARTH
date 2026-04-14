@@ -185,6 +185,131 @@ def test_selected_topography_labels_for_no_refinement():
     assert module.selected_topography_labels("staged", None) == module.TOPO_SEQUENCE
 
 
+def test_run_simulation_resynchronizes_hydro_w_after_state_updates():
+    module = load_module()
+
+    class FakeIntegrator:
+        stages = (0,)
+
+        def stop(self, cycle, current_time):
+            return current_time >= 1.0
+
+    class FakeEOS:
+        def compute(self, op, args):
+            assert op == "U->W"
+            return args[0] + 100.0
+
+    class FakeCoord:
+        def nghost(self):
+            return 1
+
+    class FakeOptions:
+        class _IntgOptions:
+            def tlim(self, value):
+                self.value = value
+
+        def coord(self):
+            return FakeCoord()
+
+        def intg(self):
+            return self._IntgOptions()
+
+    class FakeBlock:
+        def __init__(self):
+            self._cycle = 0
+            self._options = FakeOptions()
+            self.eos = FakeEOS()
+
+        def module(self, name):
+            if name == "hydro.eos":
+                return self.eos
+            if name == "hydro.eos.thermo":
+                return object()
+            raise KeyError(name)
+
+        def cycle(self):
+            return self._cycle
+
+        def options(self):
+            return self._options
+
+        @property
+        def options(self):
+            return self._options
+
+        def apply_hydro_bc(self, hydro_w, type=0):
+            hydro_w[..., 0] += 1.0
+
+    class FakeMesh:
+        def __init__(self):
+            self.blocks = [FakeBlock()]
+            self.intg = FakeIntegrator()
+            self.output_snapshots = []
+
+        def module(self, name):
+            if name == "block0.intg":
+                return self.intg
+            raise KeyError(name)
+
+        def set_cycle(self, cycle):
+            self.blocks[0]._cycle = cycle
+
+        def max_time_step(self, mesh_vars):
+            return 1.0
+
+        def print_cycle_info(self, mesh_vars, current_time, dt):
+            pass
+
+        def forward(self, mesh_vars, dt, stage):
+            mesh_vars[0]["hydro_u"] = mesh_vars[0]["hydro_u"] + 2.0
+
+        def check_redo(self, mesh_vars):
+            return 0
+
+        def make_outputs(self, mesh_vars, current_time):
+            self.output_snapshots.append(
+                (
+                    current_time,
+                    mesh_vars[0]["hydro_u"].clone(),
+                    mesh_vars[0]["hydro_w"].clone(),
+                )
+            )
+
+    mesh = FakeMesh()
+    block_vars = {
+        "hydro_u": torch.zeros((6, 2, 2, 2), dtype=torch.float64),
+        "hydro_w": torch.zeros((6, 2, 2, 2), dtype=torch.float64),
+        "topo": torch.zeros((2, 2, 2), dtype=torch.bool),
+    }
+
+    original_add = module.add_frigate_forcing
+    original_evolve = module.evolve_kinetics
+    try:
+        module.add_frigate_forcing = (
+            lambda block_vars, eos, precip_indices, dt: block_vars["hydro_u"].add_(3.0)
+        )
+        module.evolve_kinetics = (
+            lambda hydro_w, eos, thermo_x, thermo_y, kinet, dt: torch.ones_like(hydro_w[module.kICY:])
+        )
+        mesh_vars, current_time = module.run_simulation(
+            mesh, object(), object(), [block_vars], 0.0, 1.0, ()
+        )
+    finally:
+        module.add_frigate_forcing = original_add
+        module.evolve_kinetics = original_evolve
+
+    assert current_time == 1.0
+    assert len(mesh.output_snapshots) == 1
+    _, hydro_u_out, hydro_w_out = mesh.output_snapshots[0]
+    expected_hydro_u = torch.full_like(hydro_u_out, 5.0)
+    expected_hydro_u[module.kICY:] += 1.0
+    assert torch.equal(hydro_u_out, expected_hydro_u)
+    expected_hydro_w = expected_hydro_u + 100.0
+    expected_hydro_w[..., 0] += 1.0
+    assert torch.equal(hydro_w_out, expected_hydro_w)
+    assert torch.equal(mesh_vars[0]["hydro_w"], expected_hydro_w)
+
+
 def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
     module = load_module()
     events = []

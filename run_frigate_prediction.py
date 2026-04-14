@@ -441,8 +441,17 @@ def apply_ghost_zone_forcing(
     block_vars["hydro_u"] = clone_with_lateral_ghost_zones(
         block_vars["hydro_u"], target_hydro_u, nghost
     )
+    return synchronize_hydro_state(mesh, block_vars)
+
+
+def synchronize_hydro_state(
+    mesh: Mesh,
+    block_vars: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
     eos = mesh.blocks[0].module("hydro.eos")
-    block_vars["hydro_w"] = eos.compute("U->W", (block_vars["hydro_u"],))
+    hydro_w = eos.compute("U->W", (block_vars["hydro_u"],))
+    mesh.blocks[0].apply_hydro_bc(hydro_w)
+    block_vars["hydro_w"] = hydro_w
     return block_vars
 
 def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
@@ -503,7 +512,9 @@ def run_simulation(mesh: Mesh,
 
         for stage in range(len(intg.stages)):
             mesh.forward(mesh_vars, dt, stage)
+            block_vars = synchronize_hydro_state(mesh, block_vars)
             add_frigate_forcing(block_vars, eos, precip_indices, dt)
+            block_vars = synchronize_hydro_state(mesh, block_vars)
 
         err = mesh.check_redo(mesh_vars)
         if err > 0:
@@ -515,6 +526,7 @@ def run_simulation(mesh: Mesh,
             block_vars["hydro_w"], eos, thermo_x, thermo_y, kinet, dt
         )
         block_vars["hydro_u"][kICY:] += del_rho
+        block_vars = synchronize_hydro_state(mesh, block_vars)
 
         current_time += dt
         mesh.make_outputs(mesh_vars, current_time)
