@@ -38,6 +38,10 @@ import warnings
 # Add current directory to path for importing local modules
 sys.path.insert(0, os.path.dirname(__file__))
 
+try:
+    from .data_products import discover_product_files
+except ImportError:  # pragma: no cover - script execution path
+    from data_products import discover_product_files
 from regrid import (
     compute_height_grid,
     regrid_multiple_variables,
@@ -266,64 +270,16 @@ def find_era5_files(data_dir: str, date_str: Optional[str] = None) -> Dict[str, 
     Raises:
         FileNotFoundError: If no matching files are found or if required files are missing
     """
-    if not os.path.isdir(data_dir):
-        raise FileNotFoundError(f"Data directory not found: {data_dir}")
-    
-    # Find dynamics files
-    if date_str:
-        dynamics_pattern = os.path.join(data_dir, f'era5_hourly_dynamics_{date_str}.nc')
-        dynamics_files = glob.glob(dynamics_pattern)
-    else:
-        dynamics_pattern = os.path.join(data_dir, 'era5_hourly_dynamics_*.nc')
-        dynamics_files = sorted(glob.glob(dynamics_pattern))
-    
-    if not dynamics_files:
-        raise FileNotFoundError(
-            f"No ERA5 dynamics files found in {data_dir}. "
-            f"Expected files matching: era5_hourly_dynamics_YYYYMMDD.nc"
-        )
-    
-    # Build file dictionary
-    file_dict = {}
-    missing_files = []
-    
-    for dynamics_file in dynamics_files:
-        # Extract date from filename
-        basename = os.path.basename(dynamics_file)
-        date_str_found = basename.replace('era5_hourly_dynamics_', '').replace('.nc', '')
-        
-        # Find corresponding files
-        densities_file = os.path.join(data_dir, f'era5_hourly_densities_{date_str_found}.nc')
-        density_file = os.path.join(data_dir, f'era5_density_{date_str_found}.nc')
-        
-        # Check if all files exist
-        files_found = {
-            'dynamics': dynamics_file,
-            'densities': densities_file if os.path.exists(densities_file) else None,
-            'density': density_file if os.path.exists(density_file) else None
+    discovered = discover_product_files(data_dir, stem=date_str, require_density=True)
+    return {
+        stem: {
+            'source': file_set.source,
+            'dynamics': file_set.dynamics,
+            'densities': file_set.densities,
+            'density': file_set.density,
         }
-        
-        if files_found['densities'] is None:
-            missing_files.append(f"era5_hourly_densities_{date_str_found}.nc")
-        if files_found['density'] is None:
-            missing_files.append(f"era5_density_{date_str_found}.nc")
-        
-        if files_found['densities'] and files_found['density']:
-            file_dict[date_str_found] = files_found
-    
-    if missing_files:
-        raise FileNotFoundError(
-            f"Missing required ERA5 files in {data_dir}:\n" +
-            "\n".join(f"  - {f}" for f in missing_files) +
-            "\n\nPlease run steps 1 and 2 of the pipeline first."
-        )
-    
-    if not file_dict:
-        raise FileNotFoundError(
-            f"No complete set of ERA5 files found in {data_dir}"
-        )
-    
-    return file_dict
+        for stem, file_set in discovered.items()
+    }
 
 
 def load_era5_data(file_paths: Dict[str, str]) -> Tuple:
@@ -349,7 +305,7 @@ def load_era5_data(file_paths: Dict[str, str]) -> Tuple:
             "Install with: pip install xarray netCDF4"
         )
     
-    print("\nLoading ERA5 data files...")
+    print("\nLoading ECMWF data files...")
     
     # Load dynamics file
     print(f"  Loading dynamics: {os.path.basename(file_paths['dynamics'])}")
@@ -431,7 +387,7 @@ def load_era5_data(file_paths: Dict[str, str]) -> Tuple:
     
     # Extract metadata
     metadata = {
-        'source': 'ECMWF ERA5 Reanalysis',
+        'source': 'ECMWF data products',
     }
     
     # Try to extract global attributes
@@ -549,7 +505,7 @@ def regrid_era5_to_cartesian(
     print(f"   x3 range: [{x3[0]:.1f}, {x3[-1]:.1f}] m")
     
     # Step 3: Find ERA5 files
-    print(f"\n3. Finding ERA5 data files in: {data_dir}")
+    print(f"\n3. Finding ECMWF data files in: {data_dir}")
     file_dict = find_era5_files(data_dir, date_str)
     
     print(f"   Found data for {len(file_dict)} date(s):")
@@ -565,6 +521,7 @@ def regrid_era5_to_cartesian(
     
     print(f"\n4. Processing date: {process_date}")
     file_paths = file_dict[process_date]
+    print(f"   Source: {file_paths.get('source', 'era5')}")
     
     # Step 4: Load ERA5 data
     variables, coords, metadata = load_era5_data(file_paths)
