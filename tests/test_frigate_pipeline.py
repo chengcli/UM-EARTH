@@ -74,7 +74,7 @@ def test_run_frigate_prepare_creates_artifacts(tmp_path, monkeypatch):
             outputs[label] = path
         return outputs
 
-    def fake_run_initial_condition_pipeline(region, config_path, era5_out_dir, *, timeout, times):
+    def fake_run_initial_condition_pipeline(region, config_path, era5_out_dir, **kwargs):
         output_dir = era5_out_dir / "38.00N_39.50N_122.00W_120.50W"
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "era5_hourly_densities_20250201.nc").write_text("density", encoding="utf-8")

@@ -392,6 +392,46 @@ def clone_with_lateral_ghost_zones(
     return updated
 
 
+def refine_boundary_state_to_match(
+    boundary_state: torch.Tensor,
+    target_shape: torch.Size | tuple[int, ...],
+    nghost: int,
+) -> torch.Tensor:
+    target_shape = tuple(target_shape)
+    if tuple(boundary_state.shape) == target_shape:
+        return boundary_state
+
+    refined = boundary_state
+    while tuple(refined.shape) != target_shape:
+        next_shape = list(refined.shape)
+        for dim in (-3, -2):
+            cells = next_shape[dim]
+            if cells <= 1:
+                continue
+            next_shape[dim] = (cells - 2 * nghost) * 2 + 2 * nghost
+        next_shape = tuple(next_shape)
+        if any(dim <= 0 for dim in next_shape):
+            raise ValueError(
+                f"Cannot refine boundary state from {tuple(refined.shape)} with nghost={nghost}"
+            )
+
+        trailing_shape = refined.shape[-3:]
+        sampled = F.interpolate(
+            refined.reshape(-1, 1, *trailing_shape),
+            size=next_shape[-3:],
+            mode="trilinear",
+            align_corners=False,
+        )
+        refined = sampled.reshape(*next_shape)
+        if any(current > target for current, target in zip(refined.shape, target_shape)):
+            raise ValueError(
+                "Refined boundary state exceeded target shape: "
+                f"{tuple(refined.shape)} vs {target_shape}"
+            )
+
+    return refined
+
+
 def apply_ghost_zone_forcing(
     mesh: Mesh,
     block_vars: dict[str, torch.Tensor],
@@ -581,6 +621,72 @@ def run_spinup(mesh: Mesh,
                  "Current time = ", current_time, " seconds.\n",
                  "Elapsed time = ", end_clock - start_clock, " seconds.\n")
         print_ok("Refined variable shape = ", block_vars["hydro_w"].shape)
+
+    return mesh, thermo_x, kinet, block_vars, current_time
+
+
+def run_staged_ghost_schedule(
+    mesh: Mesh,
+    thermo_x: ThermoX,
+    kinet: Kinetics,
+    block_vars: dict[str, torch.Tensor],
+    ecmwf_hydro_u: list[torch.Tensor],
+    stage_topography: list[dict[str, torch.Tensor]],
+    current_time: float,
+    config_file: str,
+    chunk_duration: float,
+    precip_indices: tuple[int, ...],
+):
+    if len(ecmwf_hydro_u) < 4:
+        raise ValueError(
+            f"Staged ghost forcing requires 4 ECMWF slices, found {len(ecmwf_hydro_u)}"
+        )
+    if len(stage_topography) < 3:
+        raise ValueError(
+            "Staged ghost forcing requires topography stages for 2p4km, 1p2km, and 0p6km"
+        )
+
+    for output in mesh.blocks[0].options.outputs():
+        output.dt(3600.)
+
+    events = (
+        (1, True, stage_topography[1]),
+        (2, True, stage_topography[2]),
+        (3, False, None),
+    )
+    for index, should_refine, topo_vars in events:
+        target_time = index * chunk_duration
+        duration = max(target_time - current_time, 0.0)
+        start_clock = time.time()
+        mesh_vars, current_time = run_simulation(
+            mesh, thermo_x, kinet, [block_vars], current_time, duration, precip_indices
+        )
+        block_vars = mesh_vars[0]
+
+        if should_refine:
+            mesh, thermo_x, kinet, block_vars = refine_simulation(
+                mesh, block_vars, topo_vars, config_file
+            )
+
+        nghost = mesh.blocks[0].options.coord().nghost()
+        target_hydro_u = refine_boundary_state_to_match(
+            ecmwf_hydro_u[index], block_vars["hydro_u"].shape, nghost
+        )
+        block_vars = apply_ghost_zone_forcing(mesh, block_vars, target_hydro_u)
+        end_clock = time.time()
+        print_ok(
+            "Completed staged ghost event ",
+            index,
+            "/ 3.\n",
+            "Current time = ",
+            current_time,
+            " seconds.\n",
+            "Elapsed time = ",
+            end_clock - start_clock,
+            " seconds.\n",
+            "Variable shape = ",
+            block_vars["hydro_w"].shape,
+        )
 
     return mesh, thermo_x, kinet, block_vars, current_time
 
@@ -821,6 +927,37 @@ def run_spinup_stage(ctx: ForecastContext, config_file: str, chunk_duration: flo
     )
 
 
+def run_spinup_stage_with_ghost_forcing(
+    ctx: ForecastContext, config_file: str, chunk_duration: float
+) -> None:
+    start_clock = time.time()
+    (
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        ctx.block_vars,
+        ctx.current_time,
+    ) = run_staged_ghost_schedule(
+        ctx.mesh,
+        ctx.thermo_x,
+        ctx.kinet,
+        ctx.block_vars,
+        ctx.ecmwf_hydro_u,
+        ctx.stage_topography,
+        ctx.current_time,
+        config_file,
+        chunk_duration,
+        ctx.precip_indices,
+    )
+    end_clock = time.time()
+    print_ok(
+        "Step 2 (staged refinement with ghost forcing) completed.\n",
+        "Current time = ", ctx.current_time, " seconds.\n",
+        "Current cycle = ", ctx.mesh.blocks[0].cycle(), ".\n",
+        "Elapsed time = ", end_clock - start_clock, " seconds.\n",
+    )
+
+
 def run_prediction_stage(ctx: ForecastContext, duration: float) -> None:
     start_clock = time.time()
     mesh_vars, ctx.current_time = run_simulation(
@@ -880,7 +1017,12 @@ def run_forecast(args: argparse.Namespace) -> None:
         ctx = build_forecast_context(args)
         run_hydrostatic_adjustment(ctx, args.hydrostatic_duration)
         if args.refinement_mode == "staged":
-            run_spinup_stage(ctx, args.config, args.spinup_chunk_duration)
+            if args.forcing_mode == "ghost":
+                run_spinup_stage_with_ghost_forcing(
+                    ctx, args.config, args.spinup_chunk_duration
+                )
+            else:
+                run_spinup_stage(ctx, args.config, args.spinup_chunk_duration)
             run_prediction_stage(ctx, args.prediction_duration)
         elif args.forcing_mode == "ghost":
             run_prediction_stage_with_ghost_forcing(
@@ -932,7 +1074,11 @@ def main():
     parser.add_argument(
         "--forcing-mode", type=str,
         default="nudge", choices=["nudge", "ghost"],
-        help="apply whole-domain nudging or refresh lateral ghost zones from ERA5."
+        help=(
+            "apply whole-domain nudging or refresh lateral ghost zones from ERA5. "
+            "With staged refinement, ghost mode refines at 06h and 12h and applies "
+            "a ghost-only refresh at 18h."
+        )
     )
     parser.add_argument(
         "--forcing-interval-seconds", type=float,

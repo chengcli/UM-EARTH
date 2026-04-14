@@ -62,6 +62,12 @@ SCRIPT_DIR = Path(__file__).parent
 ECMWF_DIR = SCRIPT_DIR / "um_earth" / "ecmwf_api"
 sys.path.insert(0, str(ECMWF_DIR))
 
+from data_products import (
+    build_product_stem,
+    discover_product_files,
+    product_prefix,
+)
+
 def date_range_yyyymmdd(start_date: str, end_date: str) -> list[str]:
     start = datetime.strptime(start_date, "%Y%m%d").date()
     end = datetime.strptime(end_date, "%Y%m%d").date()
@@ -73,6 +79,12 @@ def date_range_yyyymmdd(start_date: str, end_date: str) -> list[str]:
         (start + timedelta(days=i)).strftime("%Y%m%d")
         for i in range((end - start).days + 1)
     ]
+
+
+def config_date_to_yyyymmdd(value) -> str:
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y%m%d")
+    return datetime.strptime(str(value), "%Y-%m-%d").strftime("%Y%m%d")
 
 def check_cds_credentials():
     """Check if CDS API credentials are configured."""
@@ -187,9 +199,8 @@ def check_step1_files(output_dir):
     if not output_dir.exists():
         return False
     
-    # Look for dynamics and densities files
-    dynamics_files = list(output_dir.glob("era5_hourly_dynamics_*.nc"))
-    densities_files = list(output_dir.glob("era5_hourly_densities_*.nc"))
+    dynamics_files = list(output_dir.glob("*_hourly_dynamics_*.nc"))
+    densities_files = list(output_dir.glob("*_hourly_densities_*.nc"))
     
     return len(dynamics_files) > 0 and len(densities_files) > 0
 
@@ -200,15 +211,29 @@ def check_step2_files(output_dir):
         return False
     
     # Look for density files
-    density_files = list(output_dir.glob("era5_density_*.nc"))
+    density_files = list(output_dir.glob("*_density_*.nc"))
     
     return len(density_files) > 0
 
 
-def check_step3_files(output_dir, location_id, date_str):
+def check_step3_files(output_dir, location_id, stem):
     """Check if Step 3 output file exists."""
-    regridded_file = output_dir / f"regridded_{location_id}_{date_str}.nc"
+    regridded_file = output_dir / f"regridded_{location_id}_{stem}.nc"
     return regridded_file.exists()
+
+
+def infer_forecast_cycle(output_dir: Path, date_str: str) -> str:
+    file_sets = discover_product_files(str(output_dir), require_density=False)
+    matching = sorted(
+        stem.rsplit("_", 1)[1]
+        for stem, file_set in file_sets.items()
+        if file_set.source == "forecast" and stem.startswith(f"{date_str}_")
+    )
+    if not matching:
+        raise FileNotFoundError(
+            f"Could not infer forecast cycle from NetCDF intermediates in {output_dir} for {date_str}"
+        )
+    return matching[0]
 
 
 def check_step5_files(blocks_dir):
@@ -323,6 +348,29 @@ def main():
         default=None,
         help="Specific UTC times to fetch in Step 1 (for example: 00:00 06:00 12:00 18:00)"
     )
+    parser.add_argument(
+        "--data-source",
+        choices=["era5", "forecast"],
+        default="era5",
+        help="Use the ERA5 download path or ingest existing forecast files.",
+    )
+    parser.add_argument(
+        "--forecast-input-dir",
+        help="Directory containing forecast GRIB2 files when --data-source forecast.",
+    )
+    parser.add_argument(
+        "--forecast-cycle",
+        choices=["00", "06", "12", "18"],
+        default=None,
+        help="Forecast cycle to ingest. Defaults to the earliest available cycle.",
+    )
+    parser.add_argument(
+        "--forecast-leads",
+        nargs="+",
+        type=int,
+        default=[0, 6, 12, 18],
+        help="Forecast lead hours to extract when --data-source forecast.",
+    )
     
     parser.add_argument(
         '--locations-file',
@@ -394,7 +442,7 @@ def main():
         if 'start-date' not in config_data['integration']:
             raise KeyError("Missing 'start-date' key in 'integration' section of config file")
         # datetime.date YYYY-MM-DD to YYYYMMDD
-        start_date = config_data['integration'].get('start-date').strftime('%Y%m%d')
+        start_date = config_date_to_yyyymmdd(config_data['integration'].get('start-date'))
 
     # grab end date string from config
     with open(config_path, 'r') as f:
@@ -405,7 +453,7 @@ def main():
         if 'end-date' not in config_data['integration']:
             raise KeyError("Missing 'end-date' key in 'integration' section of config file")
         # datetime.date YYYY-MM-DD to YYYYMMDD
-        end_date = config_data['integration'].get('end-date').strftime('%Y%m%d')
+        end_date = config_date_to_yyyymmdd(config_data['integration'].get('end-date'))
     
     print("="*70)
     print(f"{location_name} Weather Data Pipeline")
@@ -418,46 +466,86 @@ def main():
     print(f"Timeout per step: {args.timeout} seconds ({args.timeout/60:.1f} minutes)")
     print(f"Will start from: Step {args.start_from}")
     print(f"Will stop after: Step {args.stop_after}")
+    print(f"Data source: {args.data_source}")
     if args.times:
         print(f"Requested ERA5 times: {', '.join(args.times)}")
+    if args.data_source == "forecast":
+        print(f"Forecast input dir: {args.forecast_input_dir}")
+        if args.forecast_cycle:
+            print(f"Forecast cycle: {args.forecast_cycle}")
+        print(f"Forecast leads (h): {', '.join(str(hour) for hour in args.forecast_leads)}")
     print()
 
+    if args.data_source == "forecast" and not args.forecast_input_dir:
+        print("ERROR: --forecast-input-dir is required when --data-source forecast")
+        return 1
+
     # Check credentials before starting
-    if not check_cds_credentials():
+    if args.data_source == "era5" and not check_cds_credentials():
         return 1
 
     ####### directory structures #######
     fetch_script = ECMWF_DIR / "fetch_era5_pipeline.py"
+    forecast_ingest_script = ECMWF_DIR / "ingest_forecast_data.py"
     density_script = ECMWF_DIR / "calculate_density.py"
     regrid_script = ECMWF_DIR / "regrid_era5_to_cartesian.py"
     pressure_script = ECMWF_DIR / "compute_hydrostatic_pressure.py"
     decompose_script = ECMWF_DIR / "decompose_domain.py"
     convert_script = ECMWF_DIR / "convert_netcdf_to_tensor.py"
     ####################################
+
+    source_prefix = product_prefix(args.data_source)
+    selected_cycle = args.forecast_cycle
     
     # Step 1: Fetch ERA5 data
     if args.start_from <= 1:
-        step1_success = run_step_with_timeout(
-            "Step 1: Fetch ERA5 Data",
-            ["python3", str(fetch_script), str(config_path), 
-             "--output-base", str(output_base),
-             *(["--times", *args.times] if args.times else [])],
-            timeout_seconds=args.timeout
-        )
+        if args.data_source == "era5":
+            step1_success = run_step_with_timeout(
+                "Step 1: Fetch ERA5 Data",
+                ["python3", str(fetch_script), str(config_path), 
+                 "--output-base", str(output_base),
+                 *(["--times", *args.times] if args.times else [])],
+                timeout_seconds=args.timeout
+            )
+        else:
+            step1_success = run_step_with_timeout(
+                "Step 1: Ingest Forecast Data",
+                [
+                    "python3",
+                    str(forecast_ingest_script),
+                    "--input-dir",
+                    str(Path(args.forecast_input_dir).resolve()),
+                    "--output-dir",
+                    str(output_base),
+                    "--date",
+                    start_date,
+                    *(["--cycle", args.forecast_cycle] if args.forecast_cycle else []),
+                    "--lead-hours",
+                    *(str(hour) for hour in args.forecast_leads),
+                ],
+                timeout_seconds=args.timeout,
+            )
         
         if not step1_success:
             print("\n033[91m[ERROR]\033[0m Pipeline failed at Step 1")
             return 1
 
-        print("\nLocating output directory...")
-        output_dir = find_output_directory(output_base)
+        if args.data_source == "era5":
+            print("\nLocating output directory...")
+            output_dir = find_output_directory(output_base)
 
-        if not output_dir:
-            print("\033[91m[ERROR]\033[0m Could not find output directory")
-            print("  Expected directory pattern: LATMIN_LATMAX_LONMIN_LONMAX")
-            return 1
-        
-        print(f"\033[92m[OK]\033[0m Found output directory: {output_dir}")
+            if not output_dir:
+                print("\033[91m[ERROR]\033[0m Could not find output directory")
+                print("  Expected directory pattern: LATMIN_LATMAX_LONMIN_LONMAX")
+                return 1
+            
+            print(f"\033[92m[OK]\033[0m Found output directory: {output_dir}")
+        else:
+            output_dir = output_base
+            print(f"\033[92m[OK]\033[0m Using forecast output directory: {output_dir}")
+            if selected_cycle is None:
+                selected_cycle = infer_forecast_cycle(output_dir, start_date)
+                print(f"\033[92m[OK]\033[0m Inferred forecast cycle: {selected_cycle}")
         
         # Wait for Step 1 files to be fully written
         if not wait_for_files(check_step1_files, output_dir, "Step 1", timeout_seconds=60):
@@ -473,16 +561,25 @@ def main():
     # loop from start_date to end_date
     for date_str in date_range_yyyymmdd(start_date, end_date):
         if args.start_from > 1:
-            output_dir = find_output_directory(output_base)
-            print(f"\033[92m[OK]\033[0m Found output directory: {output_dir}")
+            if args.data_source == "era5":
+                output_dir = find_output_directory(output_base)
+                print(f"\033[92m[OK]\033[0m Found output directory: {output_dir}")
+            else:
+                output_dir = output_base
+                print(f"\033[92m[OK]\033[0m Using forecast output directory: {output_dir}")
+                if selected_cycle is None:
+                    selected_cycle = infer_forecast_cycle(output_dir, date_str)
+                    print(f"\033[92m[OK]\033[0m Inferred forecast cycle: {selected_cycle}")
+
+        stem = build_product_stem(date_str, selected_cycle if args.data_source == "forecast" else None)
 
         print("\n" + "="*70)
         print(f"Processing date: {date_str}")
 
         ####### directory structures #######
-        blocks_dir = output_dir / f"regridded_{location_id}_{date_str}_blocks"
-        regridded_output = output_dir / f"regridded_{location_id}_{date_str}.nc"
-        tensors_dir = output_dir / f"regridded_{location_id}_{date_str}_tensors"
+        blocks_dir = output_dir / f"regridded_{location_id}_{stem}_blocks"
+        regridded_output = output_dir / f"regridded_{location_id}_{stem}.nc"
+        tensors_dir = output_dir / f"regridded_{location_id}_{stem}_tensors"
         ####################################
         
         # Step 2: Calculate air density
@@ -527,7 +624,7 @@ def main():
             # Wait for Step 3 file
             if not wait_for_files(check_step3_files, output_dir, "Step 3",
                                   timeout_seconds=30, location_id=location_id,
-                                  date_str=date_str):
+                                  date_str=stem):
                 print("\033[91m[ERROR]\033[0m Step 3 output file not found")
                 return 1
         
@@ -610,23 +707,24 @@ def main():
     print(f"\033[92m[OK]\033[0m All data has been processed and saved to: {output_dir}")
     print()
     print("Output files:")
-    print(f"  - era5_hourly_dynamics_*.nc (Step 1)")
-    print(f"  - era5_hourly_densities_*.nc (Step 1)")
-    print(f"  - era5_density_*.nc (Step 2)")
-    print(f"  - regridded_{location_id}_{end_date}.nc (Step 3 & 4)")
+    final_stem = build_product_stem(end_date, selected_cycle if args.data_source == "forecast" else None)
+    print(f"  - {source_prefix}_hourly_dynamics_*.nc (Step 1)")
+    print(f"  - {source_prefix}_hourly_densities_*.nc (Step 1)")
+    print(f"  - {source_prefix}_density_*.nc (Step 2)")
+    print(f"  - regridded_{location_id}_{final_stem}.nc (Step 3 & 4)")
     
     if args.stop_after == 5 or args.stop_after == 6:
-        print(f"  - regridded_{location_id}_{end_date}_blocks/*_block_*_*.nc (Step 5)")
+        print(f"  - regridded_{location_id}_{final_stem}_blocks/*_block_*_*.nc (Step 5)")
         if args.stop_after != 5:
-            print(f"  - regridded_{location_id}_{end_date}_tensors/*_block_*.part (Step 6)")
+            print(f"  - regridded_{location_id}_{final_stem}_tensors/*_block_*.part (Step 6)")
             print()
-            print(f"\033[92m[OK]\033[0m The PyTorch tensor files in regridded_{location_id}_{end_date}_tensors/ are ready for {location_name} simulations.")
+            print(f"\033[92m[OK]\033[0m The PyTorch tensor files in regridded_{location_id}_{final_stem}_tensors/ are ready for {location_name} simulations.")
         else:
             print()
-            print(f"\033[92m[OK]\033[0m The regridded_{location_id}_{end_date}.nc file and decomposed blocks are ready for {location_name} simulations.")
+            print(f"\033[92m[OK]\033[0m The regridded_{location_id}_{final_stem}.nc file and decomposed blocks are ready for {location_name} simulations.")
     else:
         print()
-        print(f"\033[92m[OK]\033[0m The regridded_{location_id}_{end_date}.nc file is ready for {location_name} simulations.")
+        print(f"\033[92m[OK]\033[0m The regridded_{location_id}_{final_stem}.nc file is ready for {location_name} simulations.")
     
     print()
     

@@ -67,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     init_prepare.add_argument("--nX", type=int, default=1)
     init_prepare.add_argument("--nY", type=int, default=1)
     init_prepare.add_argument("--times", nargs="+")
+    init_prepare.add_argument("--data-source", choices=["era5", "forecast"], default="era5")
+    init_prepare.add_argument("--forecast-input-dir")
+    init_prepare.add_argument("--forecast-cycle", choices=["00", "06", "12", "18"])
+    init_prepare.add_argument("--forecast-leads", nargs="+", type=int)
     init_prepare.set_defaults(handler=handle_init_prepare)
 
     forecast_p = sub.add_parser("forecast", help="Run the snapy forecast")
@@ -127,6 +131,10 @@ def build_parser() -> argparse.ArgumentParser:
     frigate_prepare.add_argument("--workspace-root", default=str(DEFAULT_WORKSPACE_ROOT))
     frigate_prepare.add_argument("--skip-download", action="store_true")
     frigate_prepare.add_argument("--timeout", type=int, default=3600)
+    frigate_prepare.add_argument("--data-source", choices=["era5", "forecast"], default="era5")
+    frigate_prepare.add_argument("--forecast-input-dir")
+    frigate_prepare.add_argument("--forecast-cycle", choices=["00", "06", "12", "18"])
+    frigate_prepare.add_argument("--forecast-leads", nargs="+", type=int)
     frigate_prepare.set_defaults(handler=handle_pipeline_frigate_prepare)
     return parser
 
@@ -222,8 +230,15 @@ def handle_init_prepare(args: argparse.Namespace) -> int:
     cmd.extend(["--config", args.config, "--output-base", args.output_base])
     cmd.extend(["--start-from", str(args.start_from), "--stop-after", str(args.stop_after)])
     cmd.extend(["--timeout", str(args.timeout), "--nX", str(args.nX), "--nY", str(args.nY)])
+    cmd.extend(["--data-source", args.data_source])
     if args.times:
         cmd.extend(["--times", *args.times])
+    if args.forecast_input_dir:
+        cmd.extend(["--forecast-input-dir", args.forecast_input_dir])
+    if args.forecast_cycle:
+        cmd.extend(["--forecast-cycle", args.forecast_cycle])
+    if args.forecast_leads:
+        cmd.extend(["--forecast-leads", *(str(hour) for hour in args.forecast_leads)])
     cmd.extend(["--locations-file", args.locations_file])
     return _run_python(script, cmd)
 
@@ -339,6 +354,10 @@ def handle_pipeline_frigate_prepare(args: argparse.Namespace) -> int:
         location_id=args.location_id,
         skip_download=args.skip_download,
         timeout=args.timeout,
+        data_source=args.data_source,
+        forecast_input_dir=args.forecast_input_dir,
+        forecast_cycle=args.forecast_cycle,
+        forecast_leads=args.forecast_leads,
     )
     print(run_dir)
     return 0

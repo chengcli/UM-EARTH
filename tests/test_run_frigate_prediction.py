@@ -157,12 +157,182 @@ def test_clone_with_lateral_ghost_zones_updates_only_boundary_cells():
     assert torch.all(updated[:, :, -1, :] == 1.0)
 
 
+def test_refine_boundary_state_to_match_doubles_horizontal_resolution():
+    module = load_module()
+    boundary = torch.arange(2 * 8 * 8 * 3, dtype=torch.float64).reshape(2, 8, 8, 3)
+
+    refined = module.refine_boundary_state_to_match(boundary, (2, 12, 12, 3), nghost=2)
+
+    assert refined.shape == (2, 12, 12, 3)
+    assert torch.isfinite(refined).all()
+
+
+def test_refine_boundary_state_to_match_reaches_two_refinement_levels():
+    module = load_module()
+    boundary = torch.arange(2 * 8 * 8 * 3, dtype=torch.float64).reshape(2, 8, 8, 3)
+
+    refined = module.refine_boundary_state_to_match(boundary, (2, 20, 20, 3), nghost=2)
+
+    assert refined.shape == (2, 20, 20, 3)
+    assert torch.isfinite(refined).all()
+
+
 def test_selected_topography_labels_for_no_refinement():
     module = load_module()
 
     assert module.selected_topography_labels("none", None) == ("2p4km",)
     assert module.selected_topography_labels("none", "1p2km") == ("1p2km",)
     assert module.selected_topography_labels("staged", None) == module.TOPO_SEQUENCE
+
+
+def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
+    module = load_module()
+    events = []
+
+    class FakeOutput:
+        def dt(self, value):
+            events.append(("output_dt", value))
+
+    class FakeCoord:
+        def nghost(self):
+            return 2
+
+    class FakeOptions:
+        def outputs(self):
+            return [FakeOutput()]
+
+        def coord(self):
+            return FakeCoord()
+
+    class FakeBlock:
+        def __init__(self):
+            self._options = FakeOptions()
+
+        @property
+        def options(self):
+            return self._options
+
+    class FakeMesh:
+        def __init__(self):
+            self.blocks = [FakeBlock()]
+
+    def fake_run_simulation(mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices):
+        events.append(("run", current_time, duration))
+        return mesh_vars, current_time + duration
+
+    def fake_refine_simulation(mesh, block_vars, topo_vars, config_file):
+        events.append(("refine", topo_vars["label"]))
+        shape = block_vars["hydro_u"].shape
+        next_shape = (shape[0], (shape[1] - 4) * 2 + 4, (shape[2] - 4) * 2 + 4, shape[3])
+        refined = {
+            "hydro_u": torch.zeros(next_shape, dtype=torch.float64),
+            "hydro_w": torch.zeros(next_shape, dtype=torch.float64),
+        }
+        return mesh, "thermo", "kinet", refined
+
+    def fake_apply_ghost(mesh, block_vars, target_hydro_u):
+        events.append(("ghost", tuple(target_hydro_u.shape)))
+        return {
+            **block_vars,
+            "hydro_u": target_hydro_u.clone(),
+            "hydro_w": torch.zeros_like(target_hydro_u),
+        }
+
+    monkeypatch.setattr(module, "run_simulation", fake_run_simulation)
+    monkeypatch.setattr(module, "refine_simulation", fake_refine_simulation)
+    monkeypatch.setattr(module, "apply_ghost_zone_forcing", fake_apply_ghost)
+
+    mesh = FakeMesh()
+    block_vars = {
+        "hydro_u": torch.zeros((2, 8, 8, 3), dtype=torch.float64),
+        "hydro_w": torch.zeros((2, 8, 8, 3), dtype=torch.float64),
+    }
+    ecmwf_hydro_u = [torch.ones((2, 8, 8, 3), dtype=torch.float64) * index for index in range(4)]
+    stage_topography = [{"label": label} for label in module.TOPO_SEQUENCE]
+
+    _, _, _, result_vars, current_time = module.run_staged_ghost_schedule(
+        mesh,
+        "thermo",
+        "kinet",
+        block_vars,
+        ecmwf_hydro_u,
+        stage_topography,
+        0.0,
+        "config.yaml",
+        21600.0,
+        (),
+    )
+
+    assert current_time == 64800.0
+    assert result_vars["hydro_u"].shape == (2, 20, 20, 3)
+    assert events == [
+        ("output_dt", 3600.0),
+        ("run", 0.0, 21600.0),
+        ("refine", "1p2km"),
+        ("ghost", (2, 12, 12, 3)),
+        ("run", 21600.0, 21600.0),
+        ("refine", "0p6km"),
+        ("ghost", (2, 20, 20, 3)),
+        ("run", 43200.0, 21600.0),
+        ("ghost", (2, 20, 20, 3)),
+    ]
+
+
+def test_run_forecast_uses_staged_ghost_path(monkeypatch):
+    module = load_module()
+    calls = []
+
+    def fake_build(args):
+        calls.append(("build", args.refinement_mode, args.forcing_mode))
+        return "ctx"
+
+    def fake_hydro(ctx, duration):
+        calls.append(("hydro", ctx, duration))
+
+    def fake_spinup(ctx, config_file, chunk_duration):
+        raise AssertionError("staged+nudge path should not run in staged ghost mode")
+
+    def fake_spinup_ghost(ctx, config_file, chunk_duration):
+        calls.append(("staged-ghost", ctx, config_file, chunk_duration))
+
+    def fake_prediction(ctx, duration):
+        calls.append(("predict", ctx, duration))
+
+    def fake_prediction_ghost(*args, **kwargs):
+        raise AssertionError("low-resolution ghost path should not run in staged ghost mode")
+
+    def fake_finalize(ctx):
+        calls.append(("finalize", ctx))
+
+    monkeypatch.setattr(module, "build_forecast_context", fake_build)
+    monkeypatch.setattr(module, "run_hydrostatic_adjustment", fake_hydro)
+    monkeypatch.setattr(module, "run_spinup_stage", fake_spinup)
+    monkeypatch.setattr(module, "run_spinup_stage_with_ghost_forcing", fake_spinup_ghost)
+    monkeypatch.setattr(module, "run_prediction_stage", fake_prediction)
+    monkeypatch.setattr(module, "run_prediction_stage_with_ghost_forcing", fake_prediction_ghost)
+    monkeypatch.setattr(module, "finalize_forecast", fake_finalize)
+    monkeypatch.setattr(module.dist, "is_available", lambda: False)
+    monkeypatch.setattr(module.dist, "is_initialized", lambda: False)
+
+    args = SimpleNamespace(
+        refinement_mode="staged",
+        forcing_mode="ghost",
+        hydrostatic_duration=10.0,
+        spinup_chunk_duration=21600.0,
+        prediction_duration=86400.0,
+        forcing_interval_seconds=21600.0,
+        config="dummy.yaml",
+    )
+
+    module.run_forecast(args)
+
+    assert calls == [
+        ("build", "staged", "ghost"),
+        ("hydro", "ctx", 10.0),
+        ("staged-ghost", "ctx", "dummy.yaml", 21600.0),
+        ("predict", "ctx", 86400.0),
+        ("finalize", "ctx"),
+    ]
 
 
 def test_run_forecast_uses_low_resolution_ghost_path(monkeypatch):

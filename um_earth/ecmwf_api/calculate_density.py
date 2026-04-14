@@ -39,6 +39,11 @@ import os
 from typing import Dict, Tuple
 import warnings
 
+try:
+    from .data_products import density_filename, discover_product_files
+except ImportError:  # pragma: no cover - script execution path
+    from data_products import density_filename, discover_product_files
+
 # Physical constants
 RGAS = 8.31446  # J/(mol·K) - ideal gas constant
 M_DRY = 28.96e-3  # kg/mol - molecular weight of dry air
@@ -424,15 +429,13 @@ def process_directory(input_dir: str, output_dir: str) -> None:
     print(f"\nInput directory: {input_dir}")
     print(f"Output directory: {output_dir}")
     
-    # Find all dynamics files
-    dynamics_pattern = os.path.join(input_dir, 'era5_hourly_dynamics_*.nc')
-    dynamics_files = sorted(glob.glob(dynamics_pattern))
-    
-    if not dynamics_files:
-        print(f"\n\033[91m[ERROR]\033[0m No dynamics files found matching pattern: {dynamics_pattern}")
+    try:
+        file_sets = discover_product_files(input_dir, require_density=False)
+    except FileNotFoundError as exc:
+        print(f"\n\033[91m[ERROR]\033[0m {exc}")
         sys.exit(1)
     
-    print(f"\nFound {len(dynamics_files)} dynamics file(s)")
+    print(f"\nFound {len(file_sets)} dynamics file(s)")
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -441,36 +444,24 @@ def process_directory(input_dir: str, output_dir: str) -> None:
     processed = 0
     failed = 0
     
-    for dynamics_file in dynamics_files:
-        # Extract date from filename (era5_hourly_dynamics_YYYYMMDD.nc)
-        basename = os.path.basename(dynamics_file)
-        date_str = basename.replace('era5_hourly_dynamics_', '').replace('.nc', '')
+    for stem in sorted(file_sets):
+        file_set = file_sets[stem]
+        output_file = os.path.join(output_dir, density_filename(file_set.source, stem))
         
-        # Find corresponding densities file
-        densities_file = os.path.join(input_dir, f'era5_hourly_densities_{date_str}.nc')
-        
-        if not os.path.exists(densities_file):
-            print(f"\n\033[91m[ERROR]\033[0m Skipping {date_str}: densities file not found: {densities_file}")
-            failed += 1
-            continue
-        
-        # Output file
-        output_file = os.path.join(output_dir, f'era5_density_{date_str}.nc')
-        
-        print(f"\n--- Processing {date_str} ---")
+        print(f"\n--- Processing {stem} ({file_set.source}) ---")
         
         try:
-            process_single_date(dynamics_file, densities_file, output_file)
+            process_single_date(file_set.dynamics, file_set.densities, output_file)
             processed += 1
         except Exception as e:
-            print(f"\n\033[91m[ERROR]\033[0m Failed to process {date_str}: {e}")
+            print(f"\n\033[91m[ERROR]\033[0m Failed to process {stem}: {e}")
             failed += 1
     
     # Summary
     print("\n" + "="*70)
     print("Batch Processing Summary")
     print("="*70)
-    print(f"Total files: {len(dynamics_files)}")
+    print(f"Total files: {len(file_sets)}")
     print(f"Successfully processed: {processed}")
     print(f"Failed: {failed}")
     

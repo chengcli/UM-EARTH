@@ -209,27 +209,41 @@ def run_initial_condition_pipeline(
     *,
     timeout: int = DEFAULT_TIMEOUT,
     times: Iterable[str] = DEFAULT_ERA5_TIMES,
+    data_source: str = "era5",
+    forecast_input_dir: str | None = None,
+    forecast_cycle: str | None = None,
+    forecast_leads: Iterable[int] | None = None,
 ) -> None:
     script = PROJECT_ROOT / "prepare_initial_condition.py"
-    _run_python(
-        script,
-        [
-            region.region_id,
-            "--region-kml",
-            str(region.source),
-            "--config",
-            str(config_path),
-            "--output-base",
-            str(era5_out_dir),
-            "--timeout",
-            str(timeout),
-            "--times",
-            *list(times),
-        ],
-    )
+    args = [
+        region.region_id,
+        "--region-kml",
+        str(region.source),
+        "--config",
+        str(config_path),
+        "--output-base",
+        str(era5_out_dir),
+        "--timeout",
+        str(timeout),
+        "--data-source",
+        data_source,
+    ]
+    if data_source == "era5":
+        args.extend(["--times", *list(times)])
+    else:
+        if forecast_input_dir is None:
+            raise ValueError("forecast_input_dir is required when data_source='forecast'")
+        args.extend(["--forecast-input-dir", forecast_input_dir])
+        if forecast_cycle is not None:
+            args.extend(["--forecast-cycle", forecast_cycle])
+        if forecast_leads is not None:
+            args.extend(["--forecast-leads", *(str(hour) for hour in forecast_leads)])
+    _run_python(script, args)
 
 
 def find_era5_output_dir(output_base: Path) -> Path | None:
+    if output_base.exists() and any(output_base.glob("*_hourly_dynamics_*.nc")):
+        return output_base
     candidates = [path for path in output_base.glob("*") if path.is_dir()]
     if not candidates:
         return None
@@ -277,12 +291,12 @@ def generate_verification_plots(
     fig.savefig(plots_dir / "kml_domain_overview.png", dpi=200)
     plt.close(fig)
 
-    dynamics_count = _count_matching_files(era5_output_dir, "era5_hourly_dynamics_*.nc")
-    densities_count = _count_matching_files(era5_output_dir, "era5_hourly_densities_*.nc")
+    dynamics_count = _count_matching_files(era5_output_dir, "*_hourly_dynamics_*.nc")
+    densities_count = _count_matching_files(era5_output_dir, "*_hourly_densities_*.nc")
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.bar(["densities", "dynamics"], [densities_count, dynamics_count], color=["tab:green", "tab:purple"])
     ax.set_ylabel("Files")
-    ax.set_title(f"ERA5 fetch coverage for {date}")
+    ax.set_title(f"ECMWF input coverage for {date}")
     ax.text(0.02, 0.95, "UTC times: " + ", ".join(era5_times), transform=ax.transAxes, ha="left", va="top")
     fig.tight_layout()
     fig.savefig(plots_dir / "era5_fetch_summary.png", dpi=200)
@@ -311,14 +325,22 @@ def write_run_manifest(
     digest_path: Path,
     topography_products: dict[str, Path],
     era5_output_dir: Path | None,
+    data_source: str = "era5",
+    forecast_input_dir: str | None = None,
+    forecast_cycle: str | None = None,
+    forecast_leads: Iterable[int] | None = None,
 ) -> None:
     payload = {
         "region_id": region.region_id,
         "date": date,
+        "data_source": data_source,
         "run_dir": str(run_dir),
         "simulation_input_path": str(config_path),
         "digest_path": str(digest_path),
         "era5_output_dir": str(era5_output_dir) if era5_output_dir else None,
+        "forecast_input_dir": forecast_input_dir,
+        "forecast_cycle": forecast_cycle,
+        "forecast_leads": list(forecast_leads) if forecast_leads is not None else None,
         "topography_products": {label: str(path) for label, path in topography_products.items()},
     }
     output_file.write_text(yaml.safe_dump(payload, sort_keys=True), encoding="utf-8")
@@ -332,6 +354,10 @@ def run_frigate_prepare(
     location_id: str | None = None,
     skip_download: bool = False,
     timeout: int = DEFAULT_TIMEOUT,
+    data_source: str = "era5",
+    forecast_input_dir: str | None = None,
+    forecast_cycle: str | None = None,
+    forecast_leads: Iterable[int] | None = None,
 ) -> Path:
     validate_date_format(date)
     region = load_region(region_kml=region_kml, location_id=location_id)
@@ -371,6 +397,10 @@ def run_frigate_prepare(
         era5_out_dir,
         timeout=timeout,
         times=DEFAULT_ERA5_TIMES,
+        data_source=data_source,
+        forecast_input_dir=forecast_input_dir,
+        forecast_cycle=forecast_cycle,
+        forecast_leads=forecast_leads,
     )
     era5_output_dir = find_era5_output_dir(era5_out_dir)
 
@@ -392,5 +422,9 @@ def run_frigate_prepare(
         digest_path=digest_path,
         topography_products=topography_products,
         era5_output_dir=era5_output_dir,
+        data_source=data_source,
+        forecast_input_dir=forecast_input_dir,
+        forecast_cycle=forecast_cycle,
+        forecast_leads=forecast_leads,
     )
     return run_dir
