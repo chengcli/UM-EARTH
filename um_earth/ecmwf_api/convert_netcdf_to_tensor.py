@@ -39,8 +39,10 @@ Output:
 import argparse
 import os
 import sys
+import tarfile
 from typing import Dict, Optional
 from pathlib import Path
+import re
 
 try:
     import torch
@@ -71,6 +73,33 @@ def save_tensors(tensor_map: Dict[str, torch.Tensor], filename: str) -> None:
     module = TensorModule(tensor_map)
     scripted = torch.jit.script(module)  # Needed for LibTorch compatibility
     scripted.save(filename)
+
+
+BLOCK_PATTERN = re.compile(r"^(?P<stem>.+)_block_(?P<i2>\d+)_(?P<i3>\d+)$")
+
+
+def parse_block_indices(base_name: str) -> tuple[str, int, int] | None:
+    match = BLOCK_PATTERN.match(base_name)
+    if match is None:
+        return None
+    return match.group("stem"), int(match.group("i2")), int(match.group("i3"))
+
+
+def block_rank(i2: int, i3: int, n_blocks_x3: int) -> int:
+    return i2 * n_blocks_x3 + i3
+
+
+def block_part_name(stem: str, rank: int, file_number: int = 0) -> str:
+    return f"{stem}.block{rank}.{file_number:05d}.part"
+
+
+def bundle_restart_parts(part_files: list[str], restart_file: str) -> str:
+    restart_path = Path(restart_file)
+    restart_path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(restart_path, "w") as tar:
+        for path in sorted(part_files):
+            tar.add(path, arcname=Path(path).name)
+    return str(restart_path)
 
 
 def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None) -> str:
@@ -237,8 +266,15 @@ def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None)
     return output_file
 
 
-def convert_directory(input_dir: str, output_dir: Optional[str] = None, 
-                     pattern: str = "*.nc") -> list:
+def convert_directory(
+    input_dir: str,
+    output_dir: Optional[str] = None,
+    pattern: str = "*.nc",
+    *,
+    n_blocks_x2: int = 1,
+    n_blocks_x3: int = 1,
+    bundle_restart: Optional[str] = None,
+) -> list:
     """
     Convert all NetCDF files in a directory to PyTorch tensors.
     
@@ -279,7 +315,13 @@ def convert_directory(input_dir: str, output_dir: Optional[str] = None,
     output_files = []
     for nc_file in nc_files:
         base_name = nc_file.stem  # filename without extension
-        output_file = output_path / f"{base_name}.part"
+        parsed = parse_block_indices(base_name)
+        if parsed is not None and (n_blocks_x2 > 1 or n_blocks_x3 > 1):
+            stem, i2, i3 = parsed
+            rank = block_rank(i2, i3, n_blocks_x3)
+            output_file = output_path / block_part_name(stem, rank)
+        else:
+            output_file = output_path / f"{base_name}.part"
         
         try:
             convert_netcdf_to_tensor(str(nc_file), str(output_file))
@@ -289,6 +331,10 @@ def convert_directory(input_dir: str, output_dir: Optional[str] = None,
             print(f"Skipping {nc_file}")
             continue
     
+    if bundle_restart is not None and output_files:
+        bundle_restart_parts(output_files, bundle_restart)
+        print(f"Bundled {len(output_files)} part files into {bundle_restart}")
+
     print(f"\nSuccessfully converted {len(output_files)} files")
     return output_files
 
@@ -331,6 +377,22 @@ Examples:
         default='*.nc',
         help='Glob pattern for finding NetCDF files in directory mode (default: *.nc)'
     )
+    parser.add_argument(
+        '--n-blocks-x2',
+        type=int,
+        default=1,
+        help='Number of x2 blocks represented by the input block files (default: 1)'
+    )
+    parser.add_argument(
+        '--n-blocks-x3',
+        type=int,
+        default=1,
+        help='Number of x3 blocks represented by the input block files (default: 1)'
+    )
+    parser.add_argument(
+        '--bundle-restart',
+        help='Optional output restart tarball bundling all generated .part files'
+    )
     
     args = parser.parse_args()
     
@@ -358,7 +420,14 @@ Examples:
         output_dir = args.output_dir or args.output
         
         try:
-            output_files = convert_directory(str(input_path), output_dir, args.pattern)
+            output_files = convert_directory(
+                str(input_path),
+                output_dir,
+                args.pattern,
+                n_blocks_x2=args.n_blocks_x2,
+                n_blocks_x3=args.n_blocks_x3,
+                bundle_restart=args.bundle_restart,
+            )
             if not output_files:
                 sys.exit(1)
         except Exception as e:

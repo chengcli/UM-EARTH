@@ -21,6 +21,8 @@ class ConfigOptions:
     x2_extent: float | None = None
     x3_extent: float | None = None
     tlim: int = 86400
+    nb2: int = 1
+    nb3: int = 1
 
 
 def validate_date_format(date_str: str) -> None:
@@ -55,6 +57,8 @@ def render_config(template: str, region: RegionDefinition, options: ConfigOption
         "start_date": options.start_date,
         "end_date": options.end_date,
         "tlim": options.tlim,
+        "nb2": options.nb2,
+        "nb3": options.nb3,
     }
 
     rendered = template
@@ -65,4 +69,3 @@ def render_config(template: str, region: RegionDefinition, options: ConfigOption
 
 def default_output_path(base_dir: str | Path, region: RegionDefinition) -> Path:
     return Path(base_dir) / f"{region.region_id}.yaml"
-

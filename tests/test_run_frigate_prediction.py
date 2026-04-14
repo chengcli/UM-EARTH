@@ -44,6 +44,17 @@ def test_default_input_dir_finds_regridded_tensor_dir(tmp_path):
     assert module.default_input_dir(str(config_file)) == tensor_dir
 
 
+def test_default_input_dir_finds_forecast_tensor_dir(tmp_path):
+    module = load_module()
+    run_dir = tmp_path / "run"
+    tensor_dir = run_dir / "forecast_input" / "regridded_case_tensors"
+    tensor_dir.mkdir(parents=True)
+    config_file = run_dir / "case.yaml"
+    config_file.write_text("", encoding="utf-8")
+
+    assert module.default_input_dir(str(config_file)) == tensor_dir
+
+
 def test_default_output_dir_uses_run_local_forecast_output(tmp_path):
     module = load_module()
     run_dir = tmp_path / "run"
