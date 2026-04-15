@@ -95,3 +95,36 @@ Typical operator flow:
 
 This split keeps heavyweight forecast execution separate from domain and input
 preparation, which is especially useful for detached GPU production runs.
+
+GPU Layout Variants
+-------------------
+
+The prepared FRIGATE run tree can support either a one-GPU or a two-GPU launch.
+
+One-GPU pattern
+^^^^^^^^^^^^^^^
+
+Use the default single-block layout:
+
+* ``distribute.nb2: 1``
+* ``distribute.nb3: 1``
+* Step 6 emits a single ``.part`` tensor input
+* launch ``run_frigate_prediction.py`` directly
+
+This is the layout used by the low-resolution April 12 ``pte1b`` case.
+
+Two-GPU pattern
+^^^^^^^^^^^^^^^
+
+Use a two-block x2 slab layout:
+
+* ``distribute.nb2: 2``
+* ``distribute.nb3: 1``
+* initial-condition preparation must use ``--nY 2 --nX 1``
+* Step 6 emits two rank-local ``.part`` files plus a bundled ``.restart`` tarball
+* launch with ``torchrun --nproc-per-node=2``
+
+This is the layout used by the April 13 ``pte1b`` two-GPU case.
+
+See :doc:`forecast` for the concrete preparation and runtime commands for both
+layouts.
