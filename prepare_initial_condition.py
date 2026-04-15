@@ -254,6 +254,8 @@ def check_step6_files(tensors_dir):
     
     # Look for tensor files
     tensor_files = list(tensors_dir.glob("*_block_*.part"))
+    if not tensor_files:
+        tensor_files = list(tensors_dir.glob("*.block*.part"))
     
     return len(tensor_files) > 0
 
@@ -580,6 +582,7 @@ def main():
         blocks_dir = output_dir / f"regridded_{location_id}_{stem}_blocks"
         regridded_output = output_dir / f"regridded_{location_id}_{stem}.nc"
         tensors_dir = output_dir / f"regridded_{location_id}_{stem}_tensors"
+        restart_bundle = tensors_dir / f"regridded_{location_id}_{stem}.restart"
         ####################################
         
         # Step 2: Calculate air density
@@ -682,11 +685,22 @@ def main():
             
         # Step 6: Convert NetCDF to PyTorch tensors
         if args.start_from <= 6:
+            convert_command = [
+                "python3",
+                str(convert_script),
+                str(blocks_dir),
+                "--output-dir",
+                str(tensors_dir),
+                "--n-blocks-x2",
+                str(args.nY),
+                "--n-blocks-x3",
+                str(args.nX),
+            ]
+            if args.nY * args.nX > 1:
+                convert_command.extend(["--bundle-restart", str(restart_bundle)])
             step6_success = run_step_with_timeout(
                 "Step 6: Convert to PyTorch Tensors",
-                ["python3", str(convert_script),
-                 str(blocks_dir),
-                 "--output-dir", str(tensors_dir)],
+                convert_command,
                 timeout_seconds=args.timeout
             )
             
@@ -717,6 +731,8 @@ def main():
         print(f"  - regridded_{location_id}_{final_stem}_blocks/*_block_*_*.nc (Step 5)")
         if args.stop_after != 5:
             print(f"  - regridded_{location_id}_{final_stem}_tensors/*_block_*.part (Step 6)")
+            if args.nY * args.nX > 1:
+                print(f"  - regridded_{location_id}_{final_stem}_tensors/regridded_{location_id}_{final_stem}.restart (bundled Step 6 restart)")
             print()
             print(f"\033[92m[OK]\033[0m The PyTorch tensor files in regridded_{location_id}_{final_stem}_tensors/ are ready for {location_name} simulations.")
         else:

@@ -64,8 +64,8 @@ geometry:
 distribute:
   backend: nccl
   layout: slab
-  nb2: 1
-  nb3: 1
+  nb2: {nb2}
+  nb3: {nb3}
   verbose: false
 
 dynamics:

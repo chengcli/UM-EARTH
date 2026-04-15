@@ -168,6 +168,8 @@ def write_config(
     *,
     date: str,
     template_file: Path = DEFAULT_TEMPLATE,
+    nb2: int = 1,
+    nb3: int = 1,
 ) -> str:
     rendered = render_config(
         template_file.read_text(encoding="utf-8"),
@@ -181,6 +183,8 @@ def write_config(
             x1_max=DEFAULT_X1_MAX_METERS,
             x2_extent=prepared.x2_extent_meters,
             x3_extent=prepared.x3_extent_meters,
+            nb2=nb2,
+            nb3=nb3,
         ),
     )
     output_file.write_text(rendered, encoding="utf-8")
@@ -213,6 +217,8 @@ def run_initial_condition_pipeline(
     forecast_input_dir: str | None = None,
     forecast_cycle: str | None = None,
     forecast_leads: Iterable[int] | None = None,
+    decompose_ny: int = 1,
+    decompose_nx: int = 1,
 ) -> None:
     script = PROJECT_ROOT / "prepare_initial_condition.py"
     args = [
@@ -228,6 +234,7 @@ def run_initial_condition_pipeline(
         "--data-source",
         data_source,
     ]
+    args.extend(["--nY", str(decompose_ny), "--nX", str(decompose_nx)])
     if data_source == "era5":
         args.extend(["--times", *list(times)])
     else:
@@ -358,6 +365,8 @@ def run_frigate_prepare(
     forecast_input_dir: str | None = None,
     forecast_cycle: str | None = None,
     forecast_leads: Iterable[int] | None = None,
+    decompose_ny: int = 1,
+    decompose_nx: int = 1,
 ) -> Path:
     validate_date_format(date)
     region = load_region(region_kml=region_kml, location_id=location_id)
@@ -375,7 +384,14 @@ def run_frigate_prepare(
 
     # This single YAML is both the pipeline config and the simulation input.
     config_path = run_dir / f"{region.region_id}.yaml"
-    write_config(config_path, region, prepared, date=date)
+    write_config(
+        config_path,
+        region,
+        prepared,
+        date=date,
+        nb2=decompose_ny,
+        nb3=decompose_nx,
+    )
 
     run_topography_download(region, raw_topography_dir, skip_download=skip_download)
     merged_tif = raw_topography_dir / region.region_id / f"{region.region_id}_merged_10m.tif"
@@ -401,6 +417,8 @@ def run_frigate_prepare(
         forecast_input_dir=forecast_input_dir,
         forecast_cycle=forecast_cycle,
         forecast_leads=forecast_leads,
+        decompose_ny=decompose_ny,
+        decompose_nx=decompose_nx,
     )
     era5_output_dir = find_era5_output_dir(era5_out_dir)
 

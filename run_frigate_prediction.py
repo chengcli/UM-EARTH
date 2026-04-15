@@ -1,4 +1,7 @@
 import argparse
+import os
+import tarfile
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +47,19 @@ class ForcingSchedule:
 def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
     return 1
 
+
+def refined_global_horizontal_cells(
+    current_local_nx2: int,
+    current_local_nx3: int,
+    px: int,
+    py: int,
+) -> tuple[int, int]:
+    global_nx2 = max(current_local_nx2, 1) * max(px, 1)
+    global_nx3 = max(current_local_nx3, 1) * max(py, 1)
+    next_nx2 = global_nx2 * 2 if global_nx2 > 1 else 1
+    next_nx3 = global_nx3 * 2 if global_nx3 > 1 else 1
+    return next_nx2, next_nx3
+
 def print_ok(*args):
     message = " ".join(str(arg) for arg in args)
     print("\033[92m[OK]\033[0m ", message, flush=True)
@@ -65,12 +81,22 @@ def infer_run_dir(config_file: str) -> Path:
 def resolve_restart_file(input_path: str) -> Path:
     candidate = Path(input_path).resolve()
     if candidate.is_file():
-        if candidate.suffix != ".part":
-            raise FileNotFoundError(f"Expected a .part restart tensor, found {candidate}")
+        if candidate.suffix not in {".part", ".restart"}:
+            raise FileNotFoundError(f"Expected a .part or .restart input, found {candidate}")
         return candidate
 
     if not candidate.is_dir():
         raise FileNotFoundError(f"Input path does not exist: {candidate}")
+
+    preferred_restart = candidate / "input.restart"
+    if preferred_restart.exists():
+        return preferred_restart
+
+    restart_matches = sorted(candidate.glob("*.restart"))
+    if restart_matches:
+        if len(restart_matches) > 1:
+            print_ok("Multiple restart bundles found; using", restart_matches[0].name)
+        return restart_matches[0]
 
     preferred = candidate / "input.part"
     if preferred.exists():
@@ -84,16 +110,47 @@ def resolve_restart_file(input_path: str) -> Path:
     return matches[0]
 
 
+def current_rank() -> int:
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank()
+    return int(os.environ.get("RANK", "0"))
+
+
+def load_ranked_restart_module(restart_file: Path, rank: int):
+    if restart_file.suffix == ".part":
+        return torch.jit.load(str(restart_file))
+    if restart_file.suffix != ".restart":
+        raise ValueError(f"Unsupported restart input type: {restart_file}")
+
+    with tarfile.open(restart_file, "r") as archive:
+        members = sorted(
+            member for member in archive.getnames()
+            if member.endswith(f".block{rank}.00000.part")
+            or (f".block{rank}." in member and member.endswith(".part"))
+        )
+        if not members:
+            raise FileNotFoundError(
+                f"Could not find block{rank} part file in restart bundle {restart_file}"
+            )
+        member = members[0]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive.extract(member, path=tmpdir, filter="data")
+            part_path = Path(tmpdir) / member
+            return torch.jit.load(str(part_path))
+
+
 def default_output_dir(config_file: str) -> Path:
     return infer_run_dir(config_file) / "forecast_output"
 
 
 def default_input_dir(config_file: str) -> Path:
     run_dir = infer_run_dir(config_file)
-    matches = sorted(run_dir.glob("era5/*/regridded_*_tensors"))
+    matches = sorted(run_dir.glob("*/**/regridded_*_tensors"))
+    if not matches:
+        matches = sorted(run_dir.glob("forecast_input/regridded_*_tensors"))
     if not matches:
         raise FileNotFoundError(
-            f"Could not infer ERA5 tensor directory under {run_dir / 'era5'}"
+            f"Could not infer prepared tensor directory under {run_dir}"
         )
     if len(matches) > 1:
         print_ok("Multiple tensor directories found; using", matches[0])
@@ -214,7 +271,7 @@ def load_restart_slice(
     index: int = 0,
     device: torch.device = torch.device("cpu"),
 ):
-    module = torch.jit.load(str(restart_file))
+    module = load_ranked_restart_module(restart_file, current_rank())
     block_vars = {}
     for name, data in module.named_buffers(recurse=True):
         if index >= data.shape[0]:
@@ -311,14 +368,32 @@ def build_topography_field_for_block(
     topo_vars: dict[str, torch.Tensor],
 ) -> torch.Tensor:
     coord = block.module("coord")
-    nghost = block.options.coord().nghost()
-    nc2 = coord.buffer("x2v").shape[0]
-    nc3 = coord.buffer("x3v").shape[0]
-    return build_topography_field(
-        topo_vars,
-        (max(nc2 - 2 * nghost, 1), max(nc3 - 2 * nghost, 1)),
-        nghost,
+    topo_2d = orient_topography(topo_vars).to(coord.buffer("x2v").device).to(torch.double)
+    x2v = coord.buffer("x2v").to(torch.double)
+    x3v = coord.buffer("x3v").to(torch.double)
+    layout = block.get_layout()
+    rank = block.options.layout().rank()
+    lx2, lx3, _ = layout.loc_of(rank)
+    coord_opts = block.options.coord()
+    width_x2 = coord_opts.x2max() - coord_opts.x2min()
+    width_x3 = coord_opts.x3max() - coord_opts.x3min()
+    global_x2min = coord_opts.x2min() - lx2 * width_x2
+    global_x2max = global_x2min + width_x2 * block.options.layout().px()
+    global_x3min = coord_opts.x3min() - lx3 * width_x3
+    global_x3max = global_x3min + width_x3 * block.options.layout().py()
+
+    x2_frac = ((x2v - global_x2min) / max(global_x2max - global_x2min, 1.0e-12)).clamp(0.0, 1.0)
+    x3_frac = ((x3v - global_x3min) / max(global_x3max - global_x3min, 1.0e-12)).clamp(0.0, 1.0)
+    grid_x2, grid_x3 = torch.meshgrid(x2_frac * 2.0 - 1.0, x3_frac * 2.0 - 1.0, indexing="ij")
+    grid = torch.stack((grid_x3, grid_x2), dim=-1).unsqueeze(0)
+    sampled = F.grid_sample(
+        topo_2d.unsqueeze(0).unsqueeze(0),
+        grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=True,
     )
+    return sampled.squeeze(0).squeeze(0).transpose(0, 1).unsqueeze(-1)
 
 def equilibrate_initial_fields(block: MeshBlock,
                                thermo_x: ThermoX,
@@ -714,13 +789,16 @@ def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
     nghost = old_block.options.coord().nghost()
     current_nx2 = max(coord.buffer("x2v").shape[0] - 2 * nghost, 1)
     current_nx3 = max(coord.buffer("x3v").shape[0] - 2 * nghost, 1)
+    px = old_block.options.layout().px()
+    py = old_block.options.layout().py()
 
     with open(config_file, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     base_nx2 = int(config["geometry"]["cells"]["nx2"])
     base_nx3 = int(config["geometry"]["cells"]["nx3"])
-    config["geometry"]["cells"]["nx2"] = current_nx2 * 2 if current_nx2 > 1 else 1
-    config["geometry"]["cells"]["nx3"] = current_nx3 * 2 if current_nx3 > 1 else 1
+    next_nx2, next_nx3 = refined_global_horizontal_cells(current_nx2, current_nx3, px, py)
+    config["geometry"]["cells"]["nx2"] = next_nx2
+    config["geometry"]["cells"]["nx3"] = next_nx3
     next_nx2 = int(config["geometry"]["cells"]["nx2"])
     next_nx3 = int(config["geometry"]["cells"]["nx3"])
     refinement_factor = max(next_nx2 / max(base_nx2, 1), next_nx3 / max(base_nx3, 1))

@@ -44,6 +44,17 @@ def test_default_input_dir_finds_regridded_tensor_dir(tmp_path):
     assert module.default_input_dir(str(config_file)) == tensor_dir
 
 
+def test_default_input_dir_finds_forecast_tensor_dir(tmp_path):
+    module = load_module()
+    run_dir = tmp_path / "run"
+    tensor_dir = run_dir / "forecast_input" / "regridded_case_tensors"
+    tensor_dir.mkdir(parents=True)
+    config_file = run_dir / "case.yaml"
+    config_file.write_text("", encoding="utf-8")
+
+    assert module.default_input_dir(str(config_file)) == tensor_dir
+
+
 def test_default_output_dir_uses_run_local_forecast_output(tmp_path):
     module = load_module()
     run_dir = tmp_path / "run"
@@ -100,6 +111,14 @@ def test_implicit_scheme_for_refinement_factor():
     assert module.implicit_scheme_for_refinement_factor(2.0) == 1
     assert module.implicit_scheme_for_refinement_factor(4.0) == 1
     assert module.implicit_scheme_for_refinement_factor(8.0) == 1
+
+
+def test_refined_global_horizontal_cells_uses_layout_counts():
+    module = load_module()
+
+    assert module.refined_global_horizontal_cells(28, 46, 2, 1) == (112, 92)
+    assert module.refined_global_horizontal_cells(56, 92, 2, 1) == (224, 184)
+    assert module.refined_global_horizontal_cells(56, 46, 1, 1) == (112, 92)
 
 
 def test_precipitation_tracer_indices_reads_particle_species(tmp_path):
