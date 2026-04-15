@@ -36,6 +36,7 @@ class ForecastContext:
     stage_topography: list[dict[str, torch.Tensor]]
     precip_indices: tuple[int, ...]
     current_time: float = 0.0
+    refine_at_18h: bool = False
 
 
 @dataclass(frozen=True)
@@ -236,7 +237,11 @@ def init_dist(backend: str, requested_device: str = "auto") -> torch.device:
     return device
 
 
-def create_mesh(config_file: str, output_dir: str, requested_device: str = "auto"):
+def create_mesh(
+    config_file: str,
+    output_dir: str,
+    requested_device: str = "auto",
+):
     options = MeshOptions.from_yaml(config_file, verbose=False)
     options.block().output_dir(str(Path(output_dir).resolve()))
     options.block().basename(Path(config_file).stem)
@@ -723,14 +728,17 @@ def run_staged_ghost_schedule(
     config_file: str,
     chunk_duration: float,
     precip_indices: tuple[int, ...],
+    refine_at_18h: bool = False,
 ):
     if len(ecmwf_hydro_u) < 4:
         raise ValueError(
             f"Staged ghost forcing requires 4 ECMWF slices, found {len(ecmwf_hydro_u)}"
         )
-    if len(stage_topography) < 3:
+    required_stage_count = 4 if refine_at_18h else 3
+    if len(stage_topography) < required_stage_count:
         raise ValueError(
-            "Staged ghost forcing requires topography stages for 2p4km, 1p2km, and 0p6km"
+            "Staged ghost forcing requires topography stages through "
+            f"{TOPO_SEQUENCE[required_stage_count - 1]}"
         )
 
     for output in mesh.blocks[0].options.outputs():
@@ -739,7 +747,7 @@ def run_staged_ghost_schedule(
     events = (
         (1, True, stage_topography[1]),
         (2, True, stage_topography[2]),
-        (3, False, None),
+        (3, refine_at_18h, stage_topography[3] if refine_at_18h else None),
     )
     for index, should_refine, topo_vars in events:
         target_time = index * chunk_duration
@@ -949,6 +957,7 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
         stage_topography=stage_topography,
         precip_indices=precip_indices,
         current_time=current_time,
+        refine_at_18h=args.refine_at_18h,
     )
 
 
@@ -1038,6 +1047,7 @@ def run_spinup_stage_with_ghost_forcing(
         config_file,
         chunk_duration,
         ctx.precip_indices,
+        refine_at_18h=ctx.refine_at_18h,
     )
     end_clock = time.time()
     print_ok(
@@ -1167,12 +1177,21 @@ def main():
         help=(
             "apply whole-domain nudging or refresh lateral ghost zones from ERA5. "
             "With staged refinement, ghost mode refines at 06h and 12h and applies "
-            "a ghost-only refresh at 18h."
+            "a ghost-only refresh at 18h by default; pass --refine-at-18h to refine "
+            "onto 0p3km at 18h instead."
         )
     )
     parser.add_argument(
         "--forcing-interval-seconds", type=float,
         default=21600.0, help="interval between ERA5 boundary updates in seconds."
+    )
+    parser.add_argument(
+        "--refine-at-18h",
+        action="store_true",
+        help=(
+            "with staged ghost forcing, refine again at 18h onto the 0p3km stage "
+            "instead of applying only a ghost-zone refresh."
+        ),
     )
     parser.add_argument(
         "--topography-stage", type=str,

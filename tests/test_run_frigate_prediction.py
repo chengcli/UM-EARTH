@@ -422,6 +422,101 @@ def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
     ]
 
 
+def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
+    module = load_module()
+    events = []
+
+    class FakeOutput:
+        def dt(self, value):
+            events.append(("output_dt", value))
+
+    class FakeCoord:
+        def nghost(self):
+            return 2
+
+    class FakeOptions:
+        def outputs(self):
+            return [FakeOutput()]
+
+        def coord(self):
+            return FakeCoord()
+
+    class FakeBlock:
+        def __init__(self):
+            self._options = FakeOptions()
+
+        @property
+        def options(self):
+            return self._options
+
+    class FakeMesh:
+        def __init__(self):
+            self.blocks = [FakeBlock()]
+
+    def fake_run_simulation(mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices):
+        events.append(("run", current_time, duration))
+        return mesh_vars, current_time + duration
+
+    def fake_refine_simulation(mesh, block_vars, topo_vars, config_file):
+        events.append(("refine", topo_vars["label"]))
+        shape = block_vars["hydro_u"].shape
+        next_shape = (shape[0], (shape[1] - 4) * 2 + 4, (shape[2] - 4) * 2 + 4, shape[3])
+        refined = {
+            "hydro_u": torch.zeros(next_shape, dtype=torch.float64),
+            "hydro_w": torch.zeros(next_shape, dtype=torch.float64),
+        }
+        return mesh, "thermo", "kinet", refined
+
+    def fake_apply_ghost(mesh, block_vars, target_hydro_u):
+        events.append(("ghost", tuple(target_hydro_u.shape)))
+        return {
+            **block_vars,
+            "hydro_u": target_hydro_u.clone(),
+            "hydro_w": torch.zeros_like(target_hydro_u),
+        }
+
+    monkeypatch.setattr(module, "run_simulation", fake_run_simulation)
+    monkeypatch.setattr(module, "refine_simulation", fake_refine_simulation)
+    monkeypatch.setattr(module, "apply_ghost_zone_forcing", fake_apply_ghost)
+
+    mesh = FakeMesh()
+    block_vars = {
+        "hydro_u": torch.zeros((2, 8, 8, 3), dtype=torch.float64),
+        "hydro_w": torch.zeros((2, 8, 8, 3), dtype=torch.float64),
+    }
+    ecmwf_hydro_u = [torch.ones((2, 8, 8, 3), dtype=torch.float64) * index for index in range(4)]
+    stage_topography = [{"label": label} for label in module.TOPO_SEQUENCE]
+
+    _, _, _, result_vars, current_time = module.run_staged_ghost_schedule(
+        mesh,
+        "thermo",
+        "kinet",
+        block_vars,
+        ecmwf_hydro_u,
+        stage_topography,
+        0.0,
+        "config.yaml",
+        21600.0,
+        (),
+        refine_at_18h=True,
+    )
+
+    assert current_time == 64800.0
+    assert result_vars["hydro_u"].shape == (2, 36, 36, 3)
+    assert events == [
+        ("output_dt", 3600.0),
+        ("run", 0.0, 21600.0),
+        ("refine", "1p2km"),
+        ("ghost", (2, 12, 12, 3)),
+        ("run", 21600.0, 21600.0),
+        ("refine", "0p6km"),
+        ("ghost", (2, 20, 20, 3)),
+        ("run", 43200.0, 21600.0),
+        ("refine", "0p3km"),
+        ("ghost", (2, 36, 36, 3)),
+    ]
+
+
 def test_run_forecast_uses_staged_ghost_path(monkeypatch):
     module = load_module()
     calls = []
