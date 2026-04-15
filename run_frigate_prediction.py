@@ -49,6 +49,12 @@ def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
     return 1
 
 
+def refinement_overrides_for_event(index: int, refine_at_18h: bool) -> dict[str, float | int]:
+    if index == 3 and refine_at_18h:
+        return {"cfl": 0.3, "implicit_scheme": 0}
+    return {}
+
+
 def refined_global_horizontal_cells(
     current_local_nx2: int,
     current_local_nx3: int,
@@ -759,8 +765,13 @@ def run_staged_ghost_schedule(
         block_vars = mesh_vars[0]
 
         if should_refine:
+            refinement_overrides = refinement_overrides_for_event(index, refine_at_18h)
             mesh, thermo_x, kinet, block_vars = refine_simulation(
-                mesh, block_vars, topo_vars, config_file
+                mesh,
+                block_vars,
+                topo_vars,
+                config_file,
+                **refinement_overrides,
             )
 
         nghost = mesh.blocks[0].options.coord().nghost()
@@ -786,7 +797,14 @@ def run_staged_ghost_schedule(
     return mesh, thermo_x, kinet, block_vars, current_time
 
 
-def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
+def refine_mesh(
+    mesh: Mesh,
+    device: torch.device,
+    config_file: str,
+    *,
+    cfl: float | None = None,
+    implicit_scheme: int | None = None,
+) -> Mesh:
     old_block = mesh.blocks[0]
     file_numbers, next_times = [], []
     for out in old_block.get_outputs():
@@ -810,9 +828,13 @@ def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
     next_nx2 = int(config["geometry"]["cells"]["nx2"])
     next_nx3 = int(config["geometry"]["cells"]["nx3"])
     refinement_factor = max(next_nx2 / max(base_nx2, 1), next_nx3 / max(base_nx3, 1))
-    config["integration"]["implicit-scheme"] = implicit_scheme_for_refinement_factor(
-        refinement_factor
+    config["integration"]["implicit-scheme"] = (
+        implicit_scheme
+        if implicit_scheme is not None
+        else implicit_scheme_for_refinement_factor(refinement_factor)
     )
+    if cfl is not None:
+        config["integration"]["cfl"] = cfl
 
     refined_config = (
         Path(old_block.options.output_dir()) / f"{Path(config_file).stem}.refined.yaml"
@@ -837,11 +859,20 @@ def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
 def refine_simulation(mesh: Mesh,
                       block_vars: dict[str, torch.Tensor],
                       topo_vars: dict[str, torch.Tensor],
-                      config_file: str):
+                      config_file: str,
+                      *,
+                      cfl: float | None = None,
+                      implicit_scheme: int | None = None):
     device = block_vars["hydro_u"].device
 
     # refined meshblock
-    mesh = refine_mesh(mesh, device, config_file)
+    mesh = refine_mesh(
+        mesh,
+        device,
+        config_file,
+        cfl=cfl,
+        implicit_scheme=implicit_scheme,
+    )
     block = mesh.blocks[0]
 
     # thermo model

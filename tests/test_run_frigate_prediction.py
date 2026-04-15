@@ -113,6 +113,18 @@ def test_implicit_scheme_for_refinement_factor():
     assert module.implicit_scheme_for_refinement_factor(8.0) == 1
 
 
+def test_refinement_overrides_for_18h_event():
+    module = load_module()
+
+    assert module.refinement_overrides_for_event(1, False) == {}
+    assert module.refinement_overrides_for_event(2, True) == {}
+    assert module.refinement_overrides_for_event(3, False) == {}
+    assert module.refinement_overrides_for_event(3, True) == {
+        "cfl": 0.3,
+        "implicit_scheme": 0,
+    }
+
+
 def test_refined_global_horizontal_cells_uses_layout_counts():
     module = load_module()
 
@@ -364,8 +376,9 @@ def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
         events.append(("run", current_time, duration))
         return mesh_vars, current_time + duration
 
-    def fake_refine_simulation(mesh, block_vars, topo_vars, config_file):
+    def fake_refine_simulation(mesh, block_vars, topo_vars, config_file, **kwargs):
         events.append(("refine", topo_vars["label"]))
+        assert kwargs == {}
         shape = block_vars["hydro_u"].shape
         next_shape = (shape[0], (shape[1] - 4) * 2 + 4, (shape[2] - 4) * 2 + 4, shape[3])
         refined = {
@@ -457,8 +470,8 @@ def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
         events.append(("run", current_time, duration))
         return mesh_vars, current_time + duration
 
-    def fake_refine_simulation(mesh, block_vars, topo_vars, config_file):
-        events.append(("refine", topo_vars["label"]))
+    def fake_refine_simulation(mesh, block_vars, topo_vars, config_file, **kwargs):
+        events.append(("refine", topo_vars["label"], kwargs))
         shape = block_vars["hydro_u"].shape
         next_shape = (shape[0], (shape[1] - 4) * 2 + 4, (shape[2] - 4) * 2 + 4, shape[3])
         refined = {
@@ -506,13 +519,13 @@ def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
     assert events == [
         ("output_dt", 3600.0),
         ("run", 0.0, 21600.0),
-        ("refine", "1p2km"),
+        ("refine", "1p2km", {}),
         ("ghost", (2, 12, 12, 3)),
         ("run", 21600.0, 21600.0),
-        ("refine", "0p6km"),
+        ("refine", "0p6km", {}),
         ("ghost", (2, 20, 20, 3)),
         ("run", 43200.0, 21600.0),
-        ("refine", "0p3km"),
+        ("refine", "0p3km", {"cfl": 0.3, "implicit_scheme": 0}),
         ("ghost", (2, 36, 36, 3)),
     ]
 

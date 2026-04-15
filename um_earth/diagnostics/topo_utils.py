@@ -48,11 +48,17 @@ def load_topography(topo_file):
         topo = data.get('topography', None)
         lat_bounds = data.get('lat_bounds', None)
         lon_bounds = data.get('lon_bounds', None)
+        lat = data.get('lat', None)
+        lon = data.get('lon', None)
+        row0_is_north = data.get('row0_is_north', None)
     else:
         # If data is a tensor directly
         topo = data
         lat_bounds = None
         lon_bounds = None
+        lat = None
+        lon = None
+        row0_is_north = None
     
     if topo is None:
         raise ValueError("No 'topography' key found in the .pt file")
@@ -67,7 +73,10 @@ def load_topography(topo_file):
         'topography': topo_array,
         'shape': topo_array.shape,
         'lat_bounds': lat_bounds.numpy() if isinstance(lat_bounds, torch.Tensor) else lat_bounds,
-        'lon_bounds': lon_bounds.numpy() if isinstance(lon_bounds, torch.Tensor) else lon_bounds
+        'lon_bounds': lon_bounds.numpy() if isinstance(lon_bounds, torch.Tensor) else lon_bounds,
+        'lat': lat.numpy() if isinstance(lat, torch.Tensor) else lat,
+        'lon': lon.numpy() if isinstance(lon, torch.Tensor) else lon,
+        'row0_is_north': bool(row0_is_north.item()) if isinstance(row0_is_north, torch.Tensor) else row0_is_north,
     }
     
     return result
