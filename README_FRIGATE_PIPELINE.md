@@ -1,186 +1,336 @@
 # FRIGATE Pipeline
 
-This document summarizes the current KML-driven FRIGATE workflow in `UM-EARTH`.
+This document describes the current FRIGATE workflow in `UM-EARTH` for both
+reanalysis-driven and forecast-driven runs.
 
-The pipeline has three major stages:
+The operational pattern now has three stages:
 
-1. Region preparation from a KML file
-2. ERA5 and topography preprocessing for initial conditions
-3. Forecast startup and prediction with staged refinement
+1. Fetch or ingest data and prepare restart inputs.
+2. Run a low-resolution two-GPU check.
+3. Run the full refined two-GPU case.
+
+The examples below use the active `pte1b` forecast cases:
+
+* one-GPU forecast case: `2026-04-12`
+* two-GPU forecast case: `2026-04-13`
 
 ## Inputs
 
 Required inputs:
 
-- A region KML file
-- A target date in `YYYY-MM-DD` format
+* a region KML file
+* a target date in `YYYY-MM-DD` format
+* either ERA5 access or a local forecast-data directory
 
-Example KML used during development:
+Example region:
 
-- `/home/chengcli/scix/workspace/sacramento_valley.kml`
+* `/home/chengcli/data/2025.FRIGATE/pte1b.kml`
 
 Default run root:
 
-- `/home/chengcli/data/2025.FRIGATE/runs`
+* `/home/chengcli/data/2025.FRIGATE/runs`
 
-## Stage 1: Prepare FRIGATE Run
+## Stage 1: Fetch Or Ingest Data
 
-Use the CLI pipeline entrypoint:
+FRIGATE supports two data-source modes.
+
+### Option A: ERA5
+
+Use this when you want to download reanalysis fields through the existing ERA5
+pipeline.
+
+Example:
 
 ```bash
 python3 -m um_earth.cli pipeline frigate-prepare \
-  --region-kml /home/chengcli/scix/workspace/sacramento_valley.kml \
-  --date 2026-03-07
+  --region-kml /home/chengcli/data/2025.FRIGATE/pte1b.kml \
+  --date 2026-04-01 \
+  --data-source era5
 ```
 
-This creates a run directory:
+Typical outputs:
 
-- `/home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07`
+* `<run>/<region>.yaml`
+* `<run>/topography/products/*.pt`
+* `<run>/era5/<bounds>/era5_hourly_dynamics_<date>.nc`
+* `<run>/era5/<bounds>/era5_hourly_densities_<date>.nc`
+* `<run>/era5/<bounds>/era5_density_<date>.nc`
+* `<run>/era5/<bounds>/regridded_<region>_<date>.nc`
+* `<run>/era5/<bounds>/regridded_<region>_<date>_tensors/*.part`
 
-Main outputs:
+### Option B: Prediction Data
 
-- `region_digest.json`
-- `run_manifest.yaml`
-- `sacramento_valley.yaml`
-- `plots/`
-- `topography/products/`
-- `era5/<bounds>/`
+Use this when forecast GRIB2 files already exist locally.
 
-The generated `sacramento_valley.yaml` is the canonical simulation input. There is no separate config-generation step required after `frigate-prepare`.
+Example source directory:
 
-## Stage 2: Initial Condition Artifacts
+* `/home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data/20260413`
 
-The preparation stage drives the existing `prepare_initial_condition.py` workflow and writes the regridded ERA5 tensors used by the forecast driver.
+For forecast mode, `prepare_initial_condition.py` ingests the forecast GRIB
+files, writes intermediate NetCDF products, decomposes the regridded domain,
+and produces runtime restart inputs.
 
-Typical ERA5 output directory:
-
-- `/home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/era5/37.60N_39.40N_122.58W_120.79W`
-
-Key files:
-
-- `era5_hourly_densities_20260307.nc`
-- `era5_hourly_dynamics_20260307.nc`
-- `era5_density_20260307.nc`
-- `regridded_sacramento_valley_20260307.nc`
-- `regridded_sacramento_valley_20260307_blocks/regridded_sacramento_valley_20260307_block_0_0.nc`
-- `regridded_sacramento_valley_20260307_tensors/regridded_sacramento_valley_20260307_block_0_0.part`
-
-Topography products:
-
-- `sacramento_valley_topo_2p4km.pt`
-- `sacramento_valley_topo_1p2km.pt`
-- `sacramento_valley_topo_0p6km.pt`
-- `sacramento_valley_topo_0p3km.pt`
-
-## Stage 3: Forecast Driver
-
-The forecast driver is:
-
-- [`run_frigate_prediction.py`](/home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py)
-
-Current behavior:
-
-- Uses `snapy.Mesh` as the main runtime object
-- Uses the `paddle` `shallow_splash.py` distributed initialization pattern
-- Uses `snapy` C++ and Python bindings as the source of truth for mesh construction
-- Keeps the immersed-boundary-style `topo` mask for damping inside terrain
-- Starts from the ERA5 tensor restart
-- Runs an initial hydrostatic adjustment
-- Runs staged spinup with successive mesh refinement
-- Nudges back toward later ECMWF states
-- Continues with forecast prediction
-
-### Trial Run
-
-The forecast driver can now infer the ERA5 tensor input directory, topography directory, and a default forecast output directory directly from the prepared run folder that contains `<region>.yaml`.
-
-Short CPU trial:
+Example for the April 13 two-GPU case:
 
 ```bash
-env PYTHONFAULTHANDLER=1 python3 /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
-  -c /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/sacramento_valley.yaml \
-  --device cpu \
-  --hydrostatic-duration 10 \
-  --spinup-chunk-duration 10 \
-  --prediction-duration 20
+python /home/chengcli/scix/workspace/UM-EARTH/prepare_initial_condition.py \
+  pte1b \
+  --region-kml /home/chengcli/data/2025.FRIGATE/pte1b.kml \
+  --config /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/pte1b.yaml \
+  --output-base /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_input \
+  --data-source forecast \
+  --forecast-input-dir /home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data/20260413 \
+  --forecast-cycle 00 \
+  --forecast-leads 0 6 12 18 \
+  --nY 2 --nX 1 \
+  --timeout 7200
 ```
 
-Short CUDA trial:
+Typical forecast outputs:
+
+* `forecast_hourly_dynamics_<date>_<cycle>.nc`
+* `forecast_hourly_densities_<date>_<cycle>.nc`
+* `forecast_density_<date>_<cycle>.nc`
+* `regridded_<region>_<date>_<cycle>.nc`
+* `regridded_<region>_<date>_<cycle>_blocks/*.nc`
+
+For a one-block run:
+
+* `regridded_<region>_<date>_<cycle>_tensors/*.part`
+
+For a two-block run:
+
+* `regridded_<region>_<date>_<cycle>_tensors/<basename>.block0.00000.part`
+* `regridded_<region>_<date>_<cycle>_tensors/<basename>.block1.00000.part`
+* `regridded_<region>_<date>_<cycle>_tensors/<basename>.restart`
+
+## Run Directory Layout
+
+Typical prepared run tree:
+
+```text
+runs/<region>-<date>/
+  <region>.yaml
+  region_digest.json
+  run_manifest.yaml
+  plots/
+  topography/
+    raw/
+    products/
+  era5/ or forecast_input/
+```
+
+For production forecast execution, additional output directories are created,
+for example:
+
+```text
+forecast_lowres_ghost_24h/
+forecast_lowres_ghost_24h_2gpu/
+forecast_refined_ghost_24h/
+forecast_refined_ghost_24h_2gpu/
+```
+
+## Stage 2: Low-Resolution Check With 2 GPUs
+
+Before launching the refined case, run a low-resolution two-GPU check. This
+verifies:
+
+* the bundled restart file can be read by rank
+* NCCL initialization works
+* block-local topography loading works
+* ghost-zone forcing works on the decomposed mesh
+
+### Configuration Requirements
+
+For the current two-GPU workflow:
+
+* `distribute.nb2: 2`
+* `distribute.nb3: 1`
+* preparation must use `--nY 2 --nX 1`
+* runtime launch must use `torchrun --nproc-per-node=2`
+
+### Example Low-Resolution Smoke Check
+
+This is the short April 13 two-GPU validation run:
 
 ```bash
-env MASTER_PORT=29502 PYTHONFAULTHANDLER=1 python3 /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
-  -c /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/sacramento_valley.yaml \
+env CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29531 PYTHONFAULTHANDLER=1 \
+  torchrun --nproc-per-node=2 \
+  /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
+    -c /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/pte1b.yaml \
+    -i /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_input/regridded_pte1b_20260413_00_tensors \
+    -o /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_lowres_ghost_2gpu_smoke \
+    --topography-dir /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/topography/products \
+    --device cuda \
+    --refinement-mode none \
+    --forcing-mode ghost \
+    --hydrostatic-duration 60 \
+    --prediction-duration 1800 \
+    2>&1 | tee /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_lowres_ghost_2gpu_smoke/run.log
+```
+
+Expected behavior:
+
+* both ranks start on separate GPUs
+* each rank loads a local restart block
+* hydrostatic adjustment completes
+* a short forecast segment advances and writes outputs
+
+### Example Full Low-Resolution Two-GPU Run
+
+```bash
+env CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29532 PYTHONFAULTHANDLER=1 \
+  torchrun --nproc-per-node=2 \
+  /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
+    -c /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/pte1b.yaml \
+    -i /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_input/regridded_pte1b_20260413_00_tensors \
+    -o /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_lowres_ghost_24h_2gpu \
+    --topography-dir /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/topography/products \
+    --device cuda \
+    --refinement-mode none \
+    --forcing-mode ghost \
+    --prediction-duration 86400 \
+    2>&1 | tee /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_lowres_ghost_24h_2gpu/run.log
+```
+
+## Stage 3: Full Refined Case
+
+The current refined forecast path supports staged refinement together with
+ghost-zone forcing.
+
+Schedule:
+
+* start from the 00h slice on the base mesh
+* refine at 06h
+* refine again at 12h
+* apply a ghost-only refresh at 18h
+* continue on the `0p6km` mesh for the remaining forecast segment
+
+For a full 24-hour forecast using the `00/06/12/18` forecast slices, launch the
+refined run with:
+
+* `--refinement-mode staged`
+* `--forcing-mode ghost`
+* `--prediction-duration 21600`
+
+The `21600 s` value is intentional. The staged `06/12/18` schedule covers the
+first 18 hours, and the final prediction segment covers the last 6 hours.
+
+### Example Refined Two-GPU Run
+
+```bash
+env CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29533 PYTHONFAULTHANDLER=1 \
+  torchrun --nproc-per-node=2 \
+  /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
+    -c /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/pte1b.yaml \
+    -i /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_input/regridded_pte1b_20260413_00_tensors \
+    -o /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_refined_ghost_24h_2gpu \
+    --topography-dir /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/topography/products \
+    --device cuda \
+    --refinement-mode staged \
+    --forcing-mode ghost \
+    --prediction-duration 21600 \
+    2>&1 | tee /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_refined_ghost_24h_2gpu/run.log
+```
+
+## Example Detached Scripts
+
+For production runs, use a detached launcher that survives logout. `tmux` is the
+most reliable option in this environment.
+
+### Example Script: Low-Resolution Two-GPU Run
+
+```bash
+cat > /tmp/pte1b_20260413_lowres_2gpu.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+run_dir=/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13
+out_dir=$run_dir/forecast_lowres_ghost_24h_2gpu
+mkdir -p "$out_dir"
+exec env CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29532 PYTHONFAULTHANDLER=1 \
+  torchrun --nproc-per-node=2 \
+  /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
+  -c "$run_dir/pte1b.yaml" \
+  -i "$run_dir/forecast_input/regridded_pte1b_20260413_00_tensors" \
+  -o "$out_dir" \
+  --topography-dir "$run_dir/topography/products" \
   --device cuda \
-  --hydrostatic-duration 10 \
-  --spinup-chunk-duration 10 \
-  --prediction-duration 20
+  --refinement-mode none \
+  --forcing-mode ghost \
+  --prediction-duration 86400 \
+  >> "$out_dir/run.log" 2>&1
+EOF
+
+chmod +x /tmp/pte1b_20260413_lowres_2gpu.sh
+tmux new-session -d -s pte1b_20260413_lowres_2gpu /usr/bin/bash /tmp/pte1b_20260413_lowres_2gpu.sh
 ```
 
-Notes:
-
-- Use a distinct `MASTER_PORT` if another run is already active.
-- The driver now uses `mesh.options.device_str()` as the source of truth for the mesh device after construction.
-- If `-i` is omitted, the driver uses `era5/*/regridded_*_tensors` under the config directory.
-- If `-o` is omitted, outputs go to `<run-dir>/forecast_output`.
-- `--topography-dir` is also optional and defaults to `<run-dir>/topography/products`.
-
-If you want a custom output folder name while still using inferred inputs, only override `-o`:
+### Example Script: Refined Two-GPU Run
 
 ```bash
-env MASTER_PORT=29502 PYTHONFAULTHANDLER=1 python3 /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
-  -c /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/sacramento_valley.yaml \
-  -o /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_trial_cuda \
+cat > /tmp/pte1b_20260413_refined_2gpu.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+run_dir=/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13
+out_dir=$run_dir/forecast_refined_ghost_24h_2gpu
+mkdir -p "$out_dir"
+exec env CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29533 PYTHONFAULTHANDLER=1 \
+  torchrun --nproc-per-node=2 \
+  /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
+  -c "$run_dir/pte1b.yaml" \
+  -i "$run_dir/forecast_input/regridded_pte1b_20260413_00_tensors" \
+  -o "$out_dir" \
+  --topography-dir "$run_dir/topography/products" \
   --device cuda \
-  --hydrostatic-duration 10 \
-  --spinup-chunk-duration 10 \
-  --prediction-duration 20
+  --refinement-mode staged \
+  --forcing-mode ghost \
+  --prediction-duration 21600 \
+  >> "$out_dir/run.log" 2>&1
+EOF
+
+chmod +x /tmp/pte1b_20260413_refined_2gpu.sh
+tmux new-session -d -s pte1b_20260413_refined_2gpu /usr/bin/bash /tmp/pte1b_20260413_refined_2gpu.sh
 ```
 
-### Production Run
-
-Example detached 24-hour CUDA run:
+### Reattach Or Monitor
 
 ```bash
-mkdir -p /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_production_24h
-
-setsid bash -lc '
-  exec env MASTER_PORT=29504 PYTHONFAULTHANDLER=1 \
-    python3 /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
-      -c /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/sacramento_valley.yaml \
-      -o /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_production_24h \
-      --device cuda \
-      --prediction-duration 86400 \
-      </dev/null \
-      >> /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_production_24h/run.log 2>&1
-' &
+tmux ls
+tmux attach -t pte1b_20260413_refined_2gpu
+tail -n 80 /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_refined_ghost_24h_2gpu/run.log
 ```
 
-Useful monitoring commands:
+## Notes
 
-```bash
-pgrep -af 'run_frigate_prediction.py|forecast_production_24h'
-ps -p <PID> -o pid,etime,%cpu,%mem,stat,cmd
-tail -n 40 /home/chengcli/data/2025.FRIGATE/runs/sacramento_valley-2026-03-07/forecast_production_24h/run.log
-```
+### One-GPU Versus Two-GPU Inputs
 
-## Output Layout
+One-GPU runs use a single-block input and typically launch `python
+run_frigate_prediction.py` directly.
 
-Typical forecast output directory contents:
+Two-GPU runs use:
 
-- `sacramento_valley.00000.restart`
-- `sacramento_valley.final.restart`
-- `sacramento_valley.out1.00000.nc`
-- `sacramento_valley.out2.00000.nc`
-- `sacramento_valley.refined.yaml`
-- `run.log`
+* `nb2: 2`
+* `nb3: 1`
+* `--nY 2 --nX 1` during preparation
+* a bundled `.restart` tarball plus rank-local `.part` files
+* `torchrun --nproc-per-node=2` at runtime
 
-## Source Of Truth
+### Why `nvidia-smi` Shows Three Python Processes
 
-For forecast runtime behavior, consult only:
+A two-GPU launch often shows three Python processes:
 
-- `paddle`: `example_py_scripts/shallow_splash.py`
-- `paddle`: `example_py_scripts/shallow_splash.yaml`
-- `snapy`: C++ source under `src/`
-- `snapy`: Python bindings under `python/snapy/`
+* one `torchrun` launcher
+* rank 0 worker
+* rank 1 worker
 
-Older Python examples in sibling repos should not be treated as authoritative for the current `snapy` API.
+That is expected.
+
+### Source Of Truth
+
+For runtime behavior, treat the following as authoritative:
+
+* `run_frigate_prediction.py`
+* `prepare_initial_condition.py`
+* `um_earth/frigate_pipeline.py`
+* `snapy` C++ source under `src/`
+* `snapy` Python bindings under `python/snapy/`

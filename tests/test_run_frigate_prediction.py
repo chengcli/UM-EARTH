@@ -113,6 +113,14 @@ def test_implicit_scheme_for_refinement_factor():
     assert module.implicit_scheme_for_refinement_factor(8.0) == 1
 
 
+def test_refined_global_horizontal_cells_uses_layout_counts():
+    module = load_module()
+
+    assert module.refined_global_horizontal_cells(28, 46, 2, 1) == (112, 92)
+    assert module.refined_global_horizontal_cells(56, 92, 2, 1) == (224, 184)
+    assert module.refined_global_horizontal_cells(56, 46, 1, 1) == (112, 92)
+
+
 def test_precipitation_tracer_indices_reads_particle_species(tmp_path):
     module = load_module()
     config_file = tmp_path / "config.yaml"

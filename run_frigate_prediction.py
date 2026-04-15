@@ -47,6 +47,19 @@ class ForcingSchedule:
 def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
     return 1
 
+
+def refined_global_horizontal_cells(
+    current_local_nx2: int,
+    current_local_nx3: int,
+    px: int,
+    py: int,
+) -> tuple[int, int]:
+    global_nx2 = max(current_local_nx2, 1) * max(px, 1)
+    global_nx3 = max(current_local_nx3, 1) * max(py, 1)
+    next_nx2 = global_nx2 * 2 if global_nx2 > 1 else 1
+    next_nx3 = global_nx3 * 2 if global_nx3 > 1 else 1
+    return next_nx2, next_nx3
+
 def print_ok(*args):
     message = " ".join(str(arg) for arg in args)
     print("\033[92m[OK]\033[0m ", message, flush=True)
@@ -776,13 +789,16 @@ def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
     nghost = old_block.options.coord().nghost()
     current_nx2 = max(coord.buffer("x2v").shape[0] - 2 * nghost, 1)
     current_nx3 = max(coord.buffer("x3v").shape[0] - 2 * nghost, 1)
+    px = old_block.options.layout().px()
+    py = old_block.options.layout().py()
 
     with open(config_file, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     base_nx2 = int(config["geometry"]["cells"]["nx2"])
     base_nx3 = int(config["geometry"]["cells"]["nx3"])
-    config["geometry"]["cells"]["nx2"] = current_nx2 * 2 if current_nx2 > 1 else 1
-    config["geometry"]["cells"]["nx3"] = current_nx3 * 2 if current_nx3 > 1 else 1
+    next_nx2, next_nx3 = refined_global_horizontal_cells(current_nx2, current_nx3, px, py)
+    config["geometry"]["cells"]["nx2"] = next_nx2
+    config["geometry"]["cells"]["nx3"] = next_nx3
     next_nx2 = int(config["geometry"]["cells"]["nx2"])
     next_nx3 = int(config["geometry"]["cells"]["nx3"])
     refinement_factor = max(next_nx2 / max(base_nx2, 1), next_nx3 / max(base_nx3, 1))
