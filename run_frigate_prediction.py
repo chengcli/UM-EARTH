@@ -429,22 +429,17 @@ def surface_precipitation_mask(topo: torch.Tensor) -> torch.Tensor:
 
 
 def remove_surface_precipitation(
-    hydro_w: torch.Tensor,
+    hydro_u: torch.Tensor,
     topo: torch.Tensor,
     precip_indices: tuple[int, ...],
-) -> torch.Tensor:
-    if not precip_indices:
-        return hydro_w
+) -> None:
+    if not precip_indices: return 
 
     surface = surface_precipitation_mask(topo)
-    if not torch.any(surface):
-        return hydro_w
+    if not torch.any(surface): return
 
-    updated = hydro_w.clone()
     for index in precip_indices:
-        updated[index] = torch.where(surface, torch.zeros_like(updated[index]), updated[index])
-    return updated
-
+        hydro_u[index] = torch.where(surface, torch.zeros_like(hydro_u[index]), hydro_u[index])
 
 def next_forcing_time(schedule: ForcingSchedule, available_slices: int) -> float | None:
     if schedule.next_index >= available_slices:
@@ -543,7 +538,7 @@ def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
     topo = block_vars["topo"]
     w = block_vars["hydro_w"]
     u = block_vars["hydro_u"]
-    rho = u[kIDN]
+    rho = w[kIDN]
     cv = 717.5
 
     # boundary layer forcing
@@ -558,10 +553,12 @@ def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
     # surface_level = torch.zeros_like(topo)
     # surface_level[:,:,1:] = topo[:,:,:-1] - topo[:,:,1:]
 
-    updated_hydro_w = remove_surface_precipitation(w, topo, precip_indices)
-    if updated_hydro_w.data_ptr() != w.data_ptr():
-        block_vars["hydro_w"] = updated_hydro_w
-        block_vars["hydro_u"] = eos.compute("W->U", (updated_hydro_w,))
+    remove_surface_precipitation(u, topo, precip_indices)
+
+    #updated_hydro_w = remove_surface_precipitation(w, topo, precip_indices)
+    #if updated_hydro_w.data_ptr() != w.data_ptr():
+    #    block_vars["hydro_w"] = updated_hydro_w
+    #    block_vars["hydro_u"] = eos.compute("W->U", (updated_hydro_w,))
 
 def run_simulation(mesh: Mesh,
                    thermo_x: ThermoX,

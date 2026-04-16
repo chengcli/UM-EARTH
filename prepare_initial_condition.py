@@ -685,6 +685,7 @@ def main():
             
         # Step 6: Convert NetCDF to PyTorch tensors
         if args.start_from <= 6:
+            topo_file = config_path.parent / "topography" / "products" / f"{location_id}_topo_2p4km.pt"
             convert_command = [
                 "python3",
                 str(convert_script),
@@ -695,6 +696,10 @@ def main():
                 str(args.nY),
                 "--n-blocks-x3",
                 str(args.nX),
+                "--config-file",
+                str(config_path),
+                "--topography-file",
+                str(topo_file),
             ]
             if args.nY * args.nX > 1:
                 convert_command.extend(["--bundle-restart", str(restart_bundle)])

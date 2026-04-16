@@ -15,7 +15,7 @@ from regrid import (
     compute_height_grid,
     latlon_to_xy,
     vertical_interp_to_z,
-    horizontal_regrid_xy,
+    horizontal_regrid_yx,
     regrid_pressure_to_height,
     regrid_multiple_variables,
     regrid_topography,
@@ -222,8 +222,8 @@ class TestVerticalInterpToZ(unittest.TestCase):
         self.assertEqual(result.shape, (1, 1, 2))
 
 
-class TestHorizontalRegridXy(unittest.TestCase):
-    """Test cases for horizontal_regrid_xy function."""
+class TestHorizontalRegridYx(unittest.TestCase):
+    """Test cases for horizontal_regrid_yx function."""
     
     def test_basic_regridding(self):
         """Test basic horizontal regridding."""
@@ -232,15 +232,15 @@ class TestHorizontalRegridXy(unittest.TestCase):
         y = np.array([0., 1., 2.])
         field = np.array([[0., 1., 2.],
                          [1., 2., 3.],
-                         [2., 3., 4.]])  # (X, Y)
+                         [2., 3., 4.]])  # (Y, X)
         
         x_out = np.array([0.5, 1.5])
         y_out = np.array([0.5, 1.5])
         
-        result = horizontal_regrid_xy(x, y, field, x_out, y_out, bounds_error=False)
+        result = horizontal_regrid_yx(y, x, field, y_out, x_out, bounds_error=False)
         
         # Check shape
-        self.assertEqual(result.shape, (len(x_out), len(y_out)))
+        self.assertEqual(result.shape, (len(y_out), len(x_out)))
         
     def test_extrapolation_detection_x(self):
         """Test that X extrapolation raises error when bounds_error=True."""
@@ -252,7 +252,7 @@ class TestHorizontalRegridXy(unittest.TestCase):
         y_out = np.array([0.5, 1.5])
         
         with self.assertRaises(ValueError) as context:
-            horizontal_regrid_xy(x, y, field, x_out, y_out, bounds_error=True)
+            horizontal_regrid_yx(y, x, field, y_out, x_out, bounds_error=True)
         
         self.assertIn("extrapolation", str(context.exception).lower())
         
@@ -266,7 +266,7 @@ class TestHorizontalRegridXy(unittest.TestCase):
         y_out = np.array([-1., 1., 3.])  # -1 and 3 are outside
         
         with self.assertRaises(ValueError) as context:
-            horizontal_regrid_xy(x, y, field, x_out, y_out, bounds_error=True)
+            horizontal_regrid_yx(y, x, field, y_out, x_out, bounds_error=True)
         
         self.assertIn("extrapolation", str(context.exception).lower())
 
@@ -941,7 +941,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestComputeHeightGrid))
     suite.addTests(loader.loadTestsFromTestCase(TestLatlonToXy))
     suite.addTests(loader.loadTestsFromTestCase(TestVerticalInterpToZ))
-    suite.addTests(loader.loadTestsFromTestCase(TestHorizontalRegridXy))
+    suite.addTests(loader.loadTestsFromTestCase(TestHorizontalRegridYx))
     suite.addTests(loader.loadTestsFromTestCase(TestRegridPressureToHeight))
     suite.addTests(loader.loadTestsFromTestCase(TestRegridTopography))
     suite.addTests(loader.loadTestsFromTestCase(TestMultipleVariables))

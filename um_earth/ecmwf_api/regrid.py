@@ -11,7 +11,7 @@ Functions:
     compute_height_grid: Compute height grid once for reuse with multiple variables
     latlon_to_xy: Convert lat/lon to local Cartesian coordinates
     vertical_interp_to_z: Vertical interpolation to uniform height grid
-    horizontal_regrid_xy: Horizontal regridding on regular grids
+    horizontal_regrid_yx: Horizontal regridding on regular grids
     regrid_pressure_to_height: Complete pipeline from (T,P,Lat,Lon) to (T,Z,X,Y)
     regrid_multiple_variables: Regrid multiple variables in parallel for improved performance
     regrid_topography: Regrid topographic elevation to distance grids
@@ -124,8 +124,8 @@ def compute_height_grid(
         >>> # Compute heights once
         >>> z_tpll = compute_height_grid(rho_tpll, topo_ll, plev, planet_grav)
         >>> # Reuse for multiple variables
-        >>> temp_tzyx = regrid_pressure_to_height(temp_tpll, rho_tpll, ..., z_tpll=z_tpll)
-        >>> humid_tzyx = regrid_pressure_to_height(humid_tpll, rho_tpll, ..., z_tpll=z_tpll)
+        >>> temp_tzxy = regrid_pressure_to_height(temp_tpll, rho_tpll, ..., z_tpll=z_tpll)
+        >>> humid_tzxy = regrid_pressure_to_height(humid_tpll, rho_tpll, ..., z_tpll=z_tpll)
     """
     # Step 1: Compute layer thickness from pressure levels
     dz_tpll = compute_dz_from_plev(plev, rho_tpll, planet_grav)  # (T, P-1, Lat, Lon)
@@ -313,24 +313,24 @@ def vertical_interp_to_z(
     return out
 
 
-def horizontal_regrid_xy(
-    x: np.ndarray, y: np.ndarray, field: np.ndarray, x_out: np.ndarray, y_out: np.ndarray,
+def horizontal_regrid_yx(
+    y: np.ndarray, x: np.ndarray, field: np.ndarray, y_out: np.ndarray, x_out: np.ndarray,
     bounds_error: bool = True
 ) -> np.ndarray:
     """
-    Regrid a 2D field ``f(x, y)`` defined on west-east and south-north distance
-    grids to a new regular Cartesian grid ``(x_out, y_out)``.
+    Regrid a 2D field ``f(y, x)`` defined on south-north and west-east distance
+    grids to a new regular Cartesian grid ``(y_out, x_out)``.
 
     Args:
-        x: (X,) input west-east distance coordinate
         y: (Y,) input south-north distance coordinate
-        field: (X, Y) field on the original distance grid
-        x_out: (X_out,) output west-east distance coordinate
+        x: (X,) input west-east distance coordinate
+        field: (Y, X) field on the original distance grid
         y_out: (Y_out,) output south-north distance coordinate
+        x_out: (X_out,) output west-east distance coordinate
         bounds_error: If True, raise error when interpolation becomes extrapolation
 
     Returns:
-        field_on_out: (X_out, Y_out) on west-east / south-north coordinates
+        field_on_out: (Y_out, X_out) on south-north / west-east coordinates
     """
     # Check bounds to prevent extrapolation
     if bounds_error:
@@ -348,15 +348,15 @@ def horizontal_regrid_xy(
     # Use linear interpolation by default for better performance and stability
     method = "linear"
     
-    interp = RegularGridInterpolator((x, y),
+    interp = RegularGridInterpolator((y, x),
                                      field,
                                      method=method,
                                      bounds_error=False, 
                                      fill_value=np.nan)
 
-    Xo, Yo = np.meshgrid(x_out, y_out, indexing="ij")  # (X_out, Y_out)
-    pts = np.stack([Xo.ravel(), Yo.ravel()], axis=-1)
-    Fo = interp(pts).reshape(Xo.shape)
+    Yo, Xo = np.meshgrid(y_out, x_out, indexing="ij")  # (Y_out, X_out)
+    pts = np.stack([Yo.ravel(), Xo.ravel()], axis=-1)
+    Fo = interp(pts).reshape(Yo.shape)
     
     # Check if any NaNs were introduced by extrapolation (not by input NaNs)
     # Only perform this check if bounds_error is True to avoid unnecessary computation
@@ -385,12 +385,11 @@ def _regrid_horizontal_slice(args):
     if np.all(np.isnan(slab)):
         return (ti, zi, None)
     
-    # horizontal_regrid_xy expects (X, Y) order, so we transpose the source slab
-    slab_t = slab.T  # (Lat, Lon) -> (X, Y)
-    result = horizontal_regrid_xy(
-        X_coord, Y_coord, slab_t, x2f_shifted, x3f_shifted, bounds_error=bounds_error
-    )
-    
+    # Source slices already arrive as (latitude, longitude) = (south-north, west-east).
+    result = horizontal_regrid_yx(
+        Y_coord, X_coord, slab, x3f_shifted, x2f_shifted, bounds_error=bounds_error
+    ).T
+
     return (ti, zi, result)
 
 
@@ -419,8 +418,8 @@ def regrid_pressure_to_height(
     1. Compute layer thickness from pressure levels and density (or use pre-computed heights)
     2. Add layer thickness to topographic elevation to get heights at pressure levels
     3. Interpolate variables vertically to uniform height grid (parallelized)
-    4. Convert lat/lon to local Cartesian coordinates (Y, X)
-    5. Interpolate horizontally to desired output grid, matching centers (parallelized)
+    4. Convert lat/lon to local south-north / west-east distance coordinates
+    5. Interpolate horizontally on `(Y, X)` slices, then store results as `(X, Y)`
     
     Args:
         var_tpll: (T, P, Lat, Lon) variable on pressure-lat-lon grid
@@ -451,8 +450,8 @@ def regrid_pressure_to_height(
     Example:
         >>> # Efficient regridding of multiple variables with parallelization
         >>> z_tpll = compute_height_grid(rho_tpll, topo_ll, plev, planet_grav)
-        >>> temp_tzyx = regrid_pressure_to_height(temp_tpll, ..., z_tpll=z_tpll, n_jobs=-1)
-        >>> humid_tzyx = regrid_pressure_to_height(humid_tpll, ..., z_tpll=z_tpll, n_jobs=-1)
+        >>> temp_tzxy = regrid_pressure_to_height(temp_tpll, ..., z_tpll=z_tpll, n_jobs=-1)
+        >>> humid_tzxy = regrid_pressure_to_height(humid_tpll, ..., z_tpll=z_tpll, n_jobs=-1)
     """
     T, P, Lat, Lon = var_tpll.shape
     
@@ -549,11 +548,11 @@ def regrid_pressure_to_height(
                 if np.all(np.isnan(slab)):
                     continue
                 
-                # horizontal_regrid_xy expects west-east first, south-north second.
-                slab_t = slab.T  # (latitude, longitude) -> (west-east, south-north)
-                var_tzxy[ti, zi, :, :] = horizontal_regrid_xy(
-                    X_coord, Y_coord, slab_t, x2f_shifted, x3f_shifted, bounds_error=bounds_error
-                )
+                # The low-level interpolator works on (south-north, west-east) slices,
+                # while the pipeline stores horizontal data as (west-east, south-north).
+                var_tzxy[ti, zi, :, :] = horizontal_regrid_yx(
+                    Y_coord, X_coord, slab, x3f_shifted, x2f_shifted, bounds_error=bounds_error
+                ).T
     else:
         # Parallel execution
         args_list = [
@@ -580,7 +579,7 @@ def _regrid_single_variable(args):
         args: Tuple containing all arguments needed for regrid_pressure_to_height
         
     Returns:
-        Tuple of (variable_name, regridded_data)
+        Tuple of (variable_name, regridded_data_tzxy)
     """
     (var_name, var_tpll, rho_tpll, topo_ll, plev, lats, lons,
      x1f, x2f, x3f, planet_grav, planet_radius, bounds_error, z_tpll, n_jobs,
@@ -663,8 +662,8 @@ def regrid_multiple_variables(
         ...     x1f, x2f, x3f, planet_grav, planet_radius,
         ...     n_jobs=-1  # Use all CPUs (prioritizes across variables)
         ... )
-        >>> temp_tzyx = results['temperature']
-        >>> humid_tzyx = results['humidity']
+        >>> temp_tzxy = results['temperature']
+        >>> humid_tzxy = results['humidity']
     """
     # Compute heights once if not provided
     if z_tpll is None:
@@ -794,10 +793,9 @@ def regrid_topography(
             )
     
     # Horizontal interpolation on west-east / south-north distance axes.
-    topo_t = topo_ll.T  # (latitude, longitude) -> (west-east, south-north)
-    topo_xy = horizontal_regrid_xy(
-        X_coord, Y_coord, topo_t, x2f_shifted, x3f_shifted, bounds_error=bounds_error
-    )
+    topo_xy = horizontal_regrid_yx(
+        Y_coord, X_coord, topo_ll, x3f_shifted, x2f_shifted, bounds_error=bounds_error
+    ).T
 
     return topo_xy
 
@@ -828,7 +826,7 @@ def save_regridded_data_to_netcdf(
         processing_history: Optional processing history string to add to global attributes
         
     Example:
-        >>> variables = {'temperature': temp_tzyx, 'density': rho_tzyx}
+        >>> variables = {'temperature': temp_tzxy, 'density': rho_tzxy}
         >>> coordinates = {'time': times, 'x1f': x1f, 'x2f': x2f, 'x3f': x3f}
         >>> metadata = {'source': 'ECMWF ERA5', 'region': 'White Sands, NM'}
         >>> save_regridded_data_to_netcdf('output.nc', variables, coordinates, metadata)
