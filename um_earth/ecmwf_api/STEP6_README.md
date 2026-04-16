@@ -60,7 +60,7 @@ p_centers = 0.5 * (p_interfaces[:-1] + p_interfaces[1:])
 ### 4. Aggregate into hydro_w Tensor
 
 Creates a single tensor `hydro_w` with all variables in a specific order:
-- Order: `(rho, w, v, u, p, q, q2, q3)`
+- Order: `(rho, w, u, v, p, q, q2, q3)`
 - Dimension: `nvar = 8`
 
 ### 5. Reorder Axes
@@ -316,7 +316,7 @@ The tensor files are ready for use with atmospheric models that:
 - Accept PyTorch/LibTorch tensors as input
 - Use finite volume methods
 - Support domain decomposition
-- Expect variables in the order: (rho, w, v, u, p, q, q2, q3)
+- Expect variables in the order: (rho, w, u, v, p, q, q2, q3)
 - Use axis ordering: (time, variable, x3, x2, x1)
 
 Each tensor file corresponds to one block from the domain decomposition and can be:
@@ -363,14 +363,14 @@ The tensor uses a specific axis ordering that differs from NetCDF:
 
 | Format   | Dimensions                     | Notes                           |
 |----------|--------------------------------|---------------------------------|
-| NetCDF   | (time, x1, x2, x3)            | x1=height, x2=Y, x3=X           |
+| NetCDF   | (time, x1, x2, x3)            | x1=height, x2=X, x3=Y           |
 | Tensor   | (time, nvar, x3, x2, x1)      | Reordered for simulation        |
 
 ### Coordinate Mapping
 
 - **x1** (NetCDF) → **x1** (Tensor, last dimension): Vertical/height
-- **x2** (NetCDF) → **x2** (Tensor, 3rd dimension): Y/North-South
-- **x3** (NetCDF) → **x3** (Tensor, 2nd dimension): X/East-West
+- **x2** (NetCDF) → **x2** (Tensor, 3rd dimension): X/East-West
+- **x3** (NetCDF) → **x3** (Tensor, 2nd dimension): Y/North-South
 
 This reordering ensures compatibility with simulation models that expect specific memory layouts for efficient computation.
 
@@ -383,7 +383,7 @@ This reordering ensures compatibility with simulation models that expect specifi
 
 ## Notes
 
-- Variable order in `hydro_w` is fixed: (rho, w, v, u, p, q, q2, q3)
+- Variable order in `hydro_w` is fixed: (rho, w, u, v, p, q, q2, q3)
 - Axis order is reordered from (time, x1, x2, x3) to (time, nvar, x3, x2, x1)
 - Cloud variables are optional; zeros are used if missing
 - Pressure can be on cell centers or interfaces

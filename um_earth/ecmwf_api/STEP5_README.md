@@ -62,8 +62,8 @@ python decompose_domain.py <input_file> <n_blocks_x2> <n_blocks_x3>
 ### Arguments
 
 - `input_file`: Path to regridded NetCDF file from Step 3 or 4
-- `n_blocks_x2`: Number of blocks in x2 (Y, North-South) direction
-- `n_blocks_x3`: Number of blocks in x3 (X, East-West) direction
+- `n_blocks_x2`: Number of blocks in x2 (X, East-West) direction
+- `n_blocks_x3`: Number of blocks in x3 (Y, North-South) direction
 - `--output-dir` or `-o`: Optional output directory (default: same as input file)
 
 ### Examples
@@ -105,8 +105,8 @@ Each block file contains:
 #### Dimensions
 - `time`: Same as input (no decomposition in time)
 - `x1`: Same as input (no vertical decomposition)
-- `x2`: Block size in Y direction (with ghost zones)
-- `x3`: Block size in X direction (with ghost zones)
+- `x2`: Block size in X direction (with ghost zones)
+- `x3`: Block size in Y direction (with ghost zones)
 - `x1f`, `x2f`, `x3f`: Interface dimensions
 
 #### Variables

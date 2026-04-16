@@ -333,7 +333,7 @@ def pad_topography(topo_2d: torch.Tensor, nghost: int) -> torch.Tensor:
         pad=(nghost, nghost, nghost, nghost),
         mode="replicate",
     )
-    return padded.squeeze(0).squeeze(0).transpose(0, 1).unsqueeze(-1)
+    return padded.squeeze(0).squeeze(0).unsqueeze(-1)
 
 
 def build_topography_field(
@@ -389,8 +389,8 @@ def build_topography_field_for_block(
 
     x2_frac = ((x2v - global_x2min) / max(global_x2max - global_x2min, 1.0e-12)).clamp(0.0, 1.0)
     x3_frac = ((x3v - global_x3min) / max(global_x3max - global_x3min, 1.0e-12)).clamp(0.0, 1.0)
-    grid_x2, grid_x3 = torch.meshgrid(x2_frac * 2.0 - 1.0, x3_frac * 2.0 - 1.0, indexing="ij")
-    grid = torch.stack((grid_x3, grid_x2), dim=-1).unsqueeze(0)
+    grid_x3, grid_x2 = torch.meshgrid(x3_frac * 2.0 - 1.0, x2_frac * 2.0 - 1.0, indexing="ij")
+    grid = torch.stack((grid_x2, grid_x3), dim=-1).unsqueeze(0)
     sampled = F.grid_sample(
         topo_2d.unsqueeze(0).unsqueeze(0),
         grid,
@@ -398,7 +398,7 @@ def build_topography_field_for_block(
         padding_mode="border",
         align_corners=True,
     )
-    return sampled.squeeze(0).squeeze(0).transpose(0, 1).unsqueeze(-1)
+    return sampled.squeeze(0).squeeze(0).unsqueeze(-1)
 
 def equilibrate_initial_fields(block: MeshBlock,
                                thermo_x: ThermoX,

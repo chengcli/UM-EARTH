@@ -201,9 +201,9 @@ def compute_cell_coordinates(geometry: Dict) -> Tuple:
         geometry: Dictionary containing geometry information
         
     Returns:
-        Tuple of (x1, x1f, x2, x2f, x3, x3f) where:
-            x1, x2, x3: Cell center coordinates (1D arrays)
-            x1f, x2f, x3f: Cell interface coordinates (1D arrays, length + 1)
+        Tuple of (x1, x1f, xlon, xlonf, ylat, ylatf) where:
+            x1, xlon, ylat: Cell center coordinates (1D arrays)
+            x1f, xlonf, ylatf: Cell interface coordinates (1D arrays, length + 1)
     """
     try:
         import numpy as np
@@ -215,33 +215,33 @@ def compute_cell_coordinates(geometry: Dict) -> Tuple:
     
     # Extract bounds
     x1min, x1max = bounds['x1min'], bounds['x1max']
-    x2min, x2max = bounds['x2min'], bounds['x2max']
-    x3min, x3max = bounds['x3min'], bounds['x3max']
+    xlon_min, xlon_max = bounds['x2min'], bounds['x2max']
+    ylat_min, ylat_max = bounds['x3min'], bounds['x3max']
     
     # Extract cell counts (interior + ghost)
     nx1 = cells['nx1']
-    nx2 = cells['nx2']
-    nx3 = cells['nx3']
+    nxlon = cells['nx2']
+    nylat = cells['nx3']
     nghost = cells['nghost']
     
     # Total number of cells including ghost zones
     nx1_total = nx1 + 2 * nghost
-    nx2_total = nx2 + 2 * nghost
-    nx3_total = nx3 + 2 * nghost
+    nxlon_total = nxlon + 2 * nghost
+    nylat_total = nylat + 2 * nghost
     
     # Cell interfaces (boundaries) - uniform spacing
     # len(x1f) = nx1_total + 1
     x1f = np.linspace(x1min, x1max, nx1_total + 1)
-    x2f = np.linspace(x2min, x2max, nx2_total + 1)
-    x3f = np.linspace(x3min, x3max, nx3_total + 1)
+    xlonf = np.linspace(xlon_min, xlon_max, nxlon_total + 1)
+    ylatf = np.linspace(ylat_min, ylat_max, nylat_total + 1)
     
     # Cell centers (midpoints)
     # len(x1) = nx1_total
     x1 = 0.5 * (x1f[:-1] + x1f[1:])
-    x2 = 0.5 * (x2f[:-1] + x2f[1:])
-    x3 = 0.5 * (x3f[:-1] + x3f[1:])
-    
-    return x1, x1f, x2, x2f, x3, x3f
+    xlon = 0.5 * (xlonf[:-1] + xlonf[1:])
+    ylat = 0.5 * (ylatf[:-1] + ylatf[1:])
+
+    return x1, x1f, xlon, xlonf, ylat, ylatf
 
 
 def find_era5_files(data_dir: str, date_str: Optional[str] = None) -> Dict[str, str]:
@@ -489,20 +489,20 @@ def regrid_era5_to_cartesian(
     print(f"   Gravity: {gravity:.6f} m/s²")
     print(f"   Domain bounds (with ghost zones):")
     print(f"     x1 (Z): [{geometry['bounds']['x1min']:.1f}, {geometry['bounds']['x1max']:.1f}] m")
-    print(f"     x2 (Y): [{geometry['bounds']['x2min']:.1f}, {geometry['bounds']['x2max']:.1f}] m")
-    print(f"     x3 (X): [{geometry['bounds']['x3min']:.1f}, {geometry['bounds']['x3max']:.1f}] m")
+    print(f"     x2 (X): [{geometry['bounds']['x2min']:.1f}, {geometry['bounds']['x2max']:.1f}] m")
+    print(f"     x3 (Y): [{geometry['bounds']['x3min']:.1f}, {geometry['bounds']['x3max']:.1f}] m")
     print(f"   Grid cells: nx1={geometry['cells']['nx1']}, nx2={geometry['cells']['nx2']}, "
           f"nx3={geometry['cells']['nx3']}, nghost={geometry['cells']['nghost']}")
     
     # Step 2: Compute cell coordinates
     print("\n2. Computing cell coordinates (including ghost zones)...")
-    x1, x1f, x2, x2f, x3, x3f = compute_cell_coordinates(geometry)
+    x1, x1f, xlon, xlonf, ylat, ylatf = compute_cell_coordinates(geometry)
     
-    print(f"   Cell centers: x1({len(x1)}), x2({len(x2)}), x3({len(x3)})")
-    print(f"   Cell interfaces: x1f({len(x1f)}), x2f({len(x2f)}), x3f({len(x3f)})")
+    print(f"   Cell centers: x1({len(x1)}), x2/xlon({len(xlon)}), x3/ylat({len(ylat)})")
+    print(f"   Cell interfaces: x1f({len(x1f)}), x2f/xlonf({len(xlonf)}), x3f/ylatf({len(ylatf)})")
     print(f"   x1 range: [{x1[0]:.1f}, {x1[-1]:.1f}] m")
-    print(f"   x2 range: [{x2[0]:.1f}, {x2[-1]:.1f}] m")
-    print(f"   x3 range: [{x3[0]:.1f}, {x3[-1]:.1f}] m")
+    print(f"   x2/xlon range: [{xlon[0]:.1f}, {xlon[-1]:.1f}] m")
+    print(f"   x3/ylat range: [{ylat[0]:.1f}, {ylat[-1]:.1f}] m")
     
     # Step 3: Find ERA5 files
     print(f"\n3. Finding ECMWF data files in: {data_dir}")
@@ -557,8 +557,8 @@ def regrid_era5_to_cartesian(
         lats,
         lons,
         x1,  # Use cell centers
-        x2,
-        x3,
+        xlon,
+        ylat,
         gravity,
         EARTH_RADIUS,
         bounds_error=False,  # Allow NaNs outside domain
@@ -589,8 +589,8 @@ def regrid_era5_to_cartesian(
         lats,
         lons,
         x1f,  # Use cell interfaces for vertical coordinate
-        x2,   # Use cell centers for horizontal
-        x3,
+        xlon,   # Use cell centers for horizontal
+        ylat,
         gravity,
         EARTH_RADIUS,
         bounds_error=False,
@@ -618,14 +618,19 @@ def regrid_era5_to_cartesian(
         # Assume it's already numeric
         time_hours = time.astype(float)
     
+    regridded_vars = {
+        name: np.transpose(values, (0, 1, 3, 2))
+        for name, values in regridded_vars.items()
+    }
+
     output_coords = {
         'time': time_hours,
         'x1': x1,      # Cell centers
         'x1f': x1f,    # Cell interfaces
-        'x2': x2,
-        'x2f': x2f,
-        'x3': x3,
-        'x3f': x3f,
+        'x2': xlon,
+        'x2f': xlonf,
+        'x3': ylat,
+        'x3f': ylatf,
     }
     
     # Prepare metadata
@@ -671,8 +676,8 @@ def regrid_era5_to_cartesian(
         f"lon [{lons[0]:.4f}, {lons[-1]:.4f}] deg, "
         f"pressure [{plev[-1]/100:.0f}, {plev[0]/100:.0f}] hPa. "
         f"Output domain: x1 [{x1[0]:.1f}, {x1[-1]:.1f}] m, "
-        f"x2 [{x2[0]:.1f}, {x2[-1]:.1f}] m, "
-        f"x3 [{x3[0]:.1f}, {x3[-1]:.1f}] m. "
+        f"x2/xlon [{xlon[0]:.1f}, {xlon[-1]:.1f}] m, "
+        f"x3/ylat [{ylat[0]:.1f}, {ylat[-1]:.1f}] m. "
         f"Center: ({geometry['center_latitude']:.4f}, {geometry['center_longitude']:.4f}). "
         f"Ghost zones: {geometry['cells']['nghost']}. "
         f"Date: {process_date}."
@@ -693,7 +698,7 @@ def regrid_era5_to_cartesian(
     print("="*70)
     print(f"\nOutput file: {output_file}")
     print(f"Variables: {', '.join(regridded_vars.keys())}")
-    print(f"Shape: (T={len(time)}, Z={len(x1)}, Y={len(x2)}, X={len(x3)})")
+    print(f"Shape: (T={len(time)}, Z={len(x1)}, X={len(xlon)}, Y={len(ylat)})")
     print(f"Grid includes {geometry['cells']['nghost']} ghost cells on each side")
 
 
@@ -712,7 +717,7 @@ def save_regridded_data_with_interfaces(
     
     Args:
         filename: Output NetCDF file path
-        variables: Dict of variables with shape (T, Z, Y, X)
+        variables: Dict of variables with shape (T, Z, X, Y)
         coordinates: Dict with 'time', 'x1', 'x1f', 'x2', 'x2f', 'x3', 'x3f'
         metadata: Dict with metadata
         processing_history: Processing history string
@@ -726,18 +731,18 @@ def save_regridded_data_with_interfaces(
     with Dataset(filename, "w", format="NETCDF4") as ncfile:
         # Get dimensions from first variable
         first_var = next(iter(variables.values()))
-        T, Z, Y, X = first_var.shape
+        T, Z, X, Y = first_var.shape
         
         # Create dimensions for centers
         ncfile.createDimension("time", T)
         ncfile.createDimension("x1", Z)  # Height centers
-        ncfile.createDimension("x2", Y)  # Y centers
-        ncfile.createDimension("x3", X)  # X centers
+        ncfile.createDimension("x2", X)  # X centers
+        ncfile.createDimension("x3", Y)  # Y centers
         
         # Create dimensions for interfaces
         ncfile.createDimension("x1f", Z + 1)  # Height interfaces
-        ncfile.createDimension("x2f", Y + 1)  # Y interfaces
-        ncfile.createDimension("x3f", X + 1)  # X interfaces
+        ncfile.createDimension("x2f", X + 1)  # X interfaces
+        ncfile.createDimension("x3f", Y + 1)  # Y interfaces
         
         # Create coordinate variables for centers
         time_var = ncfile.createVariable("time", "f8", ("time",))
@@ -763,18 +768,18 @@ def save_regridded_data_with_interfaces(
         x1_var.description = "Height at cell centers"
         x1_var[:] = coordinates['x1'].astype("f8")
         
-        x2_var.axis = "Y"
-        x2_var.long_name = "cell_center_y_coordinate"
+        x2_var.axis = "X"
+        x2_var.long_name = "cell_center_x_coordinate"
         x2_var.units = "meters"
-        x2_var.standard_name = "projection_y_coordinate"
-        x2_var.description = "Y coordinate at cell centers (North-South)"
+        x2_var.standard_name = "projection_x_coordinate"
+        x2_var.description = "X coordinate at cell centers (East-West)"
         x2_var[:] = coordinates['x2'].astype("f8")
-        
-        x3_var.axis = "X"
-        x3_var.long_name = "cell_center_x_coordinate"
+
+        x3_var.axis = "Y"
+        x3_var.long_name = "cell_center_y_coordinate"
         x3_var.units = "meters"
-        x3_var.standard_name = "projection_x_coordinate"
-        x3_var.description = "X coordinate at cell centers (East-West)"
+        x3_var.standard_name = "projection_y_coordinate"
+        x3_var.description = "Y coordinate at cell centers (North-South)"
         x3_var[:] = coordinates['x3'].astype("f8")
         
         # Set interface coordinate attributes
@@ -784,14 +789,14 @@ def save_regridded_data_with_interfaces(
         x1f_var.description = "Height at cell interfaces (boundaries)"
         x1f_var[:] = coordinates['x1f'].astype("f8")
         
-        x2f_var.long_name = "cell_interface_y_coordinate"
+        x2f_var.long_name = "cell_interface_x_coordinate"
         x2f_var.units = "meters"
-        x2f_var.description = "Y coordinate at cell interfaces (boundaries)"
+        x2f_var.description = "X coordinate at cell interfaces (boundaries)"
         x2f_var[:] = coordinates['x2f'].astype("f8")
-        
-        x3f_var.long_name = "cell_interface_x_coordinate"
+
+        x3f_var.long_name = "cell_interface_y_coordinate"
         x3f_var.units = "meters"
-        x3f_var.description = "X coordinate at cell interfaces (boundaries)"
+        x3f_var.description = "Y coordinate at cell interfaces (boundaries)"
         x3f_var[:] = coordinates['x3f'].astype("f8")
         
         # Create data variables
@@ -800,10 +805,10 @@ def save_regridded_data_with_interfaces(
             if var_name == 'pressure_level':
                 # pressure_level is on vertical interfaces: (T, x1f, x2, x3)
                 Zf = Z + 1
-                if var_data.shape != (T, Zf, Y, X):
+                if var_data.shape != (T, Zf, X, Y):
                     raise ValueError(
                         f"Variable '{var_name}' has shape {var_data.shape}, "
-                        f"expected ({T}, {Zf}, {Y}, {X})"
+                        f"expected ({T}, {Zf}, {X}, {Y})"
                     )
                 
                 var = ncfile.createVariable(var_name, "f4", ("time", "x1f", "x2", "x3"),
@@ -811,10 +816,10 @@ def save_regridded_data_with_interfaces(
                 var[:] = var_data.astype("f4")
             else:
                 # Regular variables on cell centers
-                if var_data.shape != (T, Z, Y, X):
+                if var_data.shape != (T, Z, X, Y):
                     raise ValueError(
                         f"Variable '{var_name}' has shape {var_data.shape}, "
-                        f"expected ({T}, {Z}, {Y}, {X})"
+                        f"expected ({T}, {Z}, {X}, {Y})"
                     )
                 
                 var = ncfile.createVariable(var_name, "f4", ("time", "x1", "x2", "x3"),
@@ -841,8 +846,8 @@ def save_regridded_data_with_interfaces(
         ncfile.grid_description = (
             "Finite volume grid with cell centers and interfaces. "
             "x1 (height) in meters positive upward, "
-            "x2 (Y) in meters positive northward, "
-            "x3 (X) in meters positive eastward. "
+            "x2 (X) in meters positive eastward, "
+            "x3 (Y) in meters positive northward. "
             "Ghost cells included on all sides."
         )
         

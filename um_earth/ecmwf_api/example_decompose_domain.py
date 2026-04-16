@@ -74,8 +74,8 @@ def main():
         print(f"  Dimensions:")
         print(f"    time = {metadata['dims']['time']}")
         print(f"    x1 (vertical) = {metadata['dims']['x1']}")
-        print(f"    x2 (Y, North-South) = {metadata['dims']['x2']}")
-        print(f"    x3 (X, East-West) = {metadata['dims']['x3']}")
+        print(f"    x2 (X, East-West) = {metadata['dims']['x2']}")
+        print(f"    x3 (Y, North-South) = {metadata['dims']['x3']}")
         
         if 'nghost' in metadata:
             print(f"  Ghost zones: {metadata['nghost']} cells on each side")

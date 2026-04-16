@@ -39,22 +39,22 @@ geometry:
   
   # Domain bounds in meters (includes ghost zones)
   # x1 = Z direction (vertical, height above ground)
-  # x2 = Y direction (north-south distance)
-  # x3 = X direction (east-west distance)
+  # x2 = X direction (east-west / longitude distance)
+  # x3 = Y direction (north-south / latitude distance)
   bounds:
     x1min: 0.0             # Ground level (meters)
     x1max: {x1_max}        # Vertical extent (top of domain)
-    x2min: 0.0             # South edge (meters, including ghost)
-    x2max: {x2_extent}     # North-south extent (including ghost)
-    x3min: 0.0             # West edge (meters, including ghost)
-    x3max: {x3_extent}     # East-west extent (including ghost)
+    x2min: 0.0             # West edge (meters, including ghost)
+    x2max: {x2_extent}     # East-west extent (including ghost)
+    x3min: 0.0             # South edge (meters, including ghost)
+    x3max: {x3_extent}     # North-south extent (including ghost)
   
   # Grid cell configuration
   # Total cells = interior cells + 2 × nghost in each direction
   cells:
     nx1: {nx1}             # Interior cells in vertical direction
-    nx2: {nx2}             # Interior cells in north-south direction
-    nx3: {nx3}             # Interior cells in east-west direction
+    nx2: {nx2}             # Interior cells in east-west direction
+    nx3: {nx3}             # Interior cells in north-south direction
     nghost: {nghost}       # Number of ghost cells on each side
   
   # Geographic center of the computational domain

@@ -100,7 +100,7 @@ def test_build_topography_field_flips_north_first_rows():
 
     assert padded.shape == (4, 4, 1)
     interior = padded[1:-1, 1:-1, 0]
-    expected = torch.tensor([[30.0, 10.0], [40.0, 20.0]], dtype=torch.float64)
+    expected = torch.tensor([[30.0, 40.0], [10.0, 20.0]], dtype=torch.float64)
     assert torch.equal(interior, expected)
 
 

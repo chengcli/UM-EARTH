@@ -56,8 +56,8 @@ def _bounds_extents_meters(bounds: tuple[float, float, float, float]) -> tuple[f
     lon_min, lat_min, lon_max, lat_max = bounds
     avg_lat = (lat_min + lat_max) / 2.0
     return (
-        (lat_max - lat_min) * 111_000.0,
         (lon_max - lon_min) * _meters_per_degree_lon(avg_lat),
+        (lat_max - lat_min) * 111_000.0,
     )
 
 
