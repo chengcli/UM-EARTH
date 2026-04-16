@@ -785,8 +785,8 @@ def save_regridded_data_to_netcdf(
                   Each array should have shape (T, Z, Y, X) where:
                   - T: time dimension
                   - Z: height dimension (x1f)
-                  - Y: Y-coordinate dimension (x2f, North-South)
-                  - X: X-coordinate dimension (x3f, East-West)
+                  - X: X-coordinate dimension (x2f, East-West)
+                  - Y: Y-coordinate dimension (x3f, North-South)
         coordinates: Dictionary with coordinate arrays:
                     - 'time': (T,) time values
                     - 'x1f': (Z,) height coordinates in meters
@@ -817,8 +817,8 @@ def save_regridded_data_to_netcdf(
         # Create dimensions
         ncfile.createDimension("time", T)
         ncfile.createDimension("x1", Z)  # Height dimension
-        ncfile.createDimension("x2", Y)  # Y dimension (North-South)
-        ncfile.createDimension("x3", X)  # X dimension (East-West)
+        ncfile.createDimension("x2", Y)  # X dimension in the model convention
+        ncfile.createDimension("x3", X)  # Y dimension in the model convention
         
         # Create coordinate variables
         time_var = ncfile.createVariable("time", "f8", ("time",))
@@ -897,8 +897,8 @@ def save_regridded_data_to_netcdf(
         ncfile.coordinate_system = "Local Cartesian projection"
         ncfile.grid_description = (
             "Distance grid with x1 (height) in meters positive upward, "
-            "x2 (Y) in meters positive northward, "
-            "x3 (X) in meters positive eastward"
+            "x2 (X) in meters positive eastward, "
+            "x3 (Y) in meters positive northward"
         )
         
         # Add processing history
@@ -1000,8 +1000,8 @@ def save_topography_to_netcdf(
         # Add coordinate system information
         ncfile.coordinate_system = "Local Cartesian projection"
         ncfile.grid_description = (
-            "Distance grid with x2 (Y) in meters positive northward, "
-            "x3 (X) in meters positive eastward"
+            "Distance grid with x2 (X) in meters positive eastward, "
+            "x3 (Y) in meters positive northward"
         )
         
         # Add processing history

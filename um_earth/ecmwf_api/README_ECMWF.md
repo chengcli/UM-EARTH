@@ -606,8 +606,8 @@ integration:
 
 **Coordinate system:**
 - `x1`: Z direction (vertical, in meters)
-- `x2`: Y direction (north-south, in meters)
-- `x3`: X direction (east-west, in meters)
+- `x2`: X direction (east-west / longitude, in meters)
+- `x3`: Y direction (north-south / latitude, in meters)
 - `bounds`: Domain boundaries including ghost zones
 - `cells`: Grid cell configuration (nx1, nx2, nx3 are interior cells, nghost is number of ghost cells on each side)
 - `center_latitude`, `center_longitude`: Geographic center of the computational domain
@@ -626,7 +626,7 @@ python fetch_era5_pipeline.py config.yaml --output-base ./data
 ### Example Output
 
 For the example configuration above, the pipeline will:
-1. Calculate domain extent: ~20 km north-south × ~10 km east-west centered at (30°N, 110°W)
+1. Calculate domain extent: ~10 km east-west × ~20 km north-south centered at (30°N, 110°W)
 2. Add 10% buffer zone to ensure adequate boundary data
 3. Fetch ERA5 densities and dynamics data for the region
 4. Save output in directory named: `29.89N_30.11N_110.06W_109.94W`

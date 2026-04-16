@@ -384,14 +384,14 @@ def main():
         '--nY',
         type=int,
         default=1,
-        help="Number of blocks in x2 (Y, North-South) direction for decomposition (default: 1)"
+        help="Number of blocks in x2 (X, East-West) direction for decomposition (default: 1)"
     )
     
     parser.add_argument(
         '--nX',
         type=int,
         default=1,
-        help="Number of blocks in x3 (X, East-West) direction for decomposition (default: 1)"
+        help="Number of blocks in x3 (Y, North-South) direction for decomposition (default: 1)"
     )
     
     args = parser.parse_args()

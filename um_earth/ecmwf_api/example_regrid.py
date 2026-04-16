@@ -124,15 +124,14 @@ def main():
     # Height grid (vertical coordinate)
     x1f = np.linspace(0., 15000., 60)  # 0-15 km height, 60 levels
     
-    # Horizontal grids (Y, X coordinates in meters)
-    # ±20 km in both directions, centered on the input domain
-    x2f = np.linspace(-20000., 20000., 80)  # Y (North-South)
-    x3f = np.linspace(-30000., 30000., 100) # X (East-West)
+    # Horizontal grids (x2/xlon, x3/ylat coordinates in meters)
+    xlonf = np.linspace(-20000., 20000., 80)   # x2 / X / longitude
+    ylatf = np.linspace(-30000., 30000., 100)  # x3 / Y / latitude
     
-    print(f"   Output shape: Z={len(x1f)}, Y={len(x2f)}, X={len(x3f)}")
+    print(f"   Output shape: Z={len(x1f)}, X={len(xlonf)}, Y={len(ylatf)}")
     print(f"   Height range: [{x1f[0]:.0f}, {x1f[-1]:.0f}] m")
-    print(f"   Y range: [{x2f[0]:.0f}, {x2f[-1]:.0f}] m")
-    print(f"   X range: [{x3f[0]:.0f}, {x3f[-1]:.0f}] m")
+    print(f"   X range: [{xlonf[0]:.0f}, {xlonf[-1]:.0f}] m")
+    print(f"   Y range: [{ylatf[0]:.0f}, {ylatf[-1]:.0f}] m")
     
     # Step 3: Set physical constants
     planet_grav = 9.81       # m/s^2 (Earth gravity)

@@ -571,13 +571,13 @@ Requirements:
     parser.add_argument(
         'n_blocks_x2',
         type=int,
-        help='Number of blocks in x2 (Y, North-South) direction'
+        help='Number of blocks in x2 (X, East-West) direction'
     )
     
     parser.add_argument(
         'n_blocks_x3',
         type=int,
-        help='Number of blocks in x3 (X, East-West) direction'
+        help='Number of blocks in x3 (Y, North-South) direction'
     )
     
     parser.add_argument(

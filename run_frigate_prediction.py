@@ -36,6 +36,7 @@ class ForecastContext:
     stage_topography: list[dict[str, torch.Tensor]]
     precip_indices: tuple[int, ...]
     current_time: float = 0.0
+    refine_at_18h: bool = False
 
 
 @dataclass(frozen=True)
@@ -236,7 +237,11 @@ def init_dist(backend: str, requested_device: str = "auto") -> torch.device:
     return device
 
 
-def create_mesh(config_file: str, output_dir: str, requested_device: str = "auto"):
+def create_mesh(
+    config_file: str,
+    output_dir: str,
+    requested_device: str = "auto",
+):
     options = MeshOptions.from_yaml(config_file, verbose=False)
     options.block().output_dir(str(Path(output_dir).resolve()))
     options.block().basename(Path(config_file).stem)
@@ -328,7 +333,7 @@ def pad_topography(topo_2d: torch.Tensor, nghost: int) -> torch.Tensor:
         pad=(nghost, nghost, nghost, nghost),
         mode="replicate",
     )
-    return padded.squeeze(0).squeeze(0).transpose(0, 1).unsqueeze(-1)
+    return padded.squeeze(0).squeeze(0).unsqueeze(-1)
 
 
 def build_topography_field(
@@ -384,8 +389,8 @@ def build_topography_field_for_block(
 
     x2_frac = ((x2v - global_x2min) / max(global_x2max - global_x2min, 1.0e-12)).clamp(0.0, 1.0)
     x3_frac = ((x3v - global_x3min) / max(global_x3max - global_x3min, 1.0e-12)).clamp(0.0, 1.0)
-    grid_x2, grid_x3 = torch.meshgrid(x2_frac * 2.0 - 1.0, x3_frac * 2.0 - 1.0, indexing="ij")
-    grid = torch.stack((grid_x3, grid_x2), dim=-1).unsqueeze(0)
+    grid_x3, grid_x2 = torch.meshgrid(x3_frac * 2.0 - 1.0, x2_frac * 2.0 - 1.0, indexing="ij")
+    grid = torch.stack((grid_x2, grid_x3), dim=-1).unsqueeze(0)
     sampled = F.grid_sample(
         topo_2d.unsqueeze(0).unsqueeze(0),
         grid,
@@ -393,7 +398,7 @@ def build_topography_field_for_block(
         padding_mode="border",
         align_corners=True,
     )
-    return sampled.squeeze(0).squeeze(0).transpose(0, 1).unsqueeze(-1)
+    return sampled.squeeze(0).squeeze(0).unsqueeze(-1)
 
 def equilibrate_initial_fields(block: MeshBlock,
                                thermo_x: ThermoX,
@@ -723,14 +728,17 @@ def run_staged_ghost_schedule(
     config_file: str,
     chunk_duration: float,
     precip_indices: tuple[int, ...],
+    refine_at_18h: bool = False,
 ):
     if len(ecmwf_hydro_u) < 4:
         raise ValueError(
             f"Staged ghost forcing requires 4 ECMWF slices, found {len(ecmwf_hydro_u)}"
         )
-    if len(stage_topography) < 3:
+    required_stage_count = 4 if refine_at_18h else 3
+    if len(stage_topography) < required_stage_count:
         raise ValueError(
-            "Staged ghost forcing requires topography stages for 2p4km, 1p2km, and 0p6km"
+            "Staged ghost forcing requires topography stages through "
+            f"{TOPO_SEQUENCE[required_stage_count - 1]}"
         )
 
     for output in mesh.blocks[0].options.outputs():
@@ -739,7 +747,7 @@ def run_staged_ghost_schedule(
     events = (
         (1, True, stage_topography[1]),
         (2, True, stage_topography[2]),
-        (3, False, None),
+        (3, refine_at_18h, stage_topography[3] if refine_at_18h else None),
     )
     for index, should_refine, topo_vars in events:
         target_time = index * chunk_duration
@@ -752,7 +760,10 @@ def run_staged_ghost_schedule(
 
         if should_refine:
             mesh, thermo_x, kinet, block_vars = refine_simulation(
-                mesh, block_vars, topo_vars, config_file
+                mesh,
+                block_vars,
+                topo_vars,
+                config_file,
             )
 
         nghost = mesh.blocks[0].options.coord().nghost()
@@ -778,7 +789,14 @@ def run_staged_ghost_schedule(
     return mesh, thermo_x, kinet, block_vars, current_time
 
 
-def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
+def refine_mesh(
+    mesh: Mesh,
+    device: torch.device,
+    config_file: str,
+    *,
+    cfl: float | None = None,
+    implicit_scheme: int | None = None,
+) -> Mesh:
     old_block = mesh.blocks[0]
     file_numbers, next_times = [], []
     for out in old_block.get_outputs():
@@ -802,9 +820,13 @@ def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
     next_nx2 = int(config["geometry"]["cells"]["nx2"])
     next_nx3 = int(config["geometry"]["cells"]["nx3"])
     refinement_factor = max(next_nx2 / max(base_nx2, 1), next_nx3 / max(base_nx3, 1))
-    config["integration"]["implicit-scheme"] = implicit_scheme_for_refinement_factor(
-        refinement_factor
+    config["integration"]["implicit-scheme"] = (
+        implicit_scheme
+        if implicit_scheme is not None
+        else implicit_scheme_for_refinement_factor(refinement_factor)
     )
+    if cfl is not None:
+        config["integration"]["cfl"] = cfl
 
     refined_config = (
         Path(old_block.options.output_dir()) / f"{Path(config_file).stem}.refined.yaml"
@@ -829,11 +851,20 @@ def refine_mesh(mesh: Mesh, device: torch.device, config_file: str) -> Mesh:
 def refine_simulation(mesh: Mesh,
                       block_vars: dict[str, torch.Tensor],
                       topo_vars: dict[str, torch.Tensor],
-                      config_file: str):
+                      config_file: str,
+                      *,
+                      cfl: float | None = None,
+                      implicit_scheme: int | None = None):
     device = block_vars["hydro_u"].device
 
     # refined meshblock
-    mesh = refine_mesh(mesh, device, config_file)
+    mesh = refine_mesh(
+        mesh,
+        device,
+        config_file,
+        cfl=cfl,
+        implicit_scheme=implicit_scheme,
+    )
     block = mesh.blocks[0]
 
     # thermo model
@@ -949,6 +980,7 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
         stage_topography=stage_topography,
         precip_indices=precip_indices,
         current_time=current_time,
+        refine_at_18h=args.refine_at_18h,
     )
 
 
@@ -1038,6 +1070,7 @@ def run_spinup_stage_with_ghost_forcing(
         config_file,
         chunk_duration,
         ctx.precip_indices,
+        refine_at_18h=ctx.refine_at_18h,
     )
     end_clock = time.time()
     print_ok(
@@ -1167,12 +1200,21 @@ def main():
         help=(
             "apply whole-domain nudging or refresh lateral ghost zones from ERA5. "
             "With staged refinement, ghost mode refines at 06h and 12h and applies "
-            "a ghost-only refresh at 18h."
+            "a ghost-only refresh at 18h by default; pass --refine-at-18h to refine "
+            "onto 0p3km at 18h instead."
         )
     )
     parser.add_argument(
         "--forcing-interval-seconds", type=float,
         default=21600.0, help="interval between ERA5 boundary updates in seconds."
+    )
+    parser.add_argument(
+        "--refine-at-18h",
+        action="store_true",
+        help=(
+            "with staged ghost forcing, refine again at 18h onto the 0p3km stage "
+            "instead of applying only a ghost-zone refresh."
+        ),
     )
     parser.add_argument(
         "--topography-stage", type=str,

@@ -37,19 +37,19 @@ def create_example_yaml_config(output_file='example_config.yaml'):
             'type': 'cartesian',
             'bounds': {
                 # Domain extends including ghost zones
-                # x1 is Z direction (vertical), x2 is Y, x3 is X
+                # x1 is Z direction (vertical), x2 is X, x3 is Y
                 'x1min': 0.0,       # meters (bottom)
                 'x1max': 10000.0,   # meters (top, ~10 km)
-                'x2min': -20000.0,  # meters (south)
-                'x2max': 20000.0,   # meters (north)
-                'x3min': -30000.0,  # meters (west)
-                'x3max': 30000.0,   # meters (east)
+                'x2min': -20000.0,  # meters (west)
+                'x2max': 20000.0,   # meters (east)
+                'x3min': -30000.0,  # meters (south)
+                'x3max': 30000.0,   # meters (north)
             },
             'cells': {
                 # Number of interior cells (excluding ghost zones)
                 'nx1': 100,  # Z direction
-                'nx2': 200,  # Y direction
-                'nx3': 300,  # X direction
+                'nx2': 200,  # X direction
+                'nx3': 300,  # Y direction
                 # Number of ghost cells on each side
                 'nghost': 3
             },

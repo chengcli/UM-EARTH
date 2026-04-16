@@ -29,14 +29,14 @@ geometry:
   bounds:
     x1min: 0.0          # meters (bottom of domain, including ghost)
     x1max: 10000.0      # meters (top of domain, including ghost)
-    x2min: -20000.0     # meters (south edge, including ghost)
-    x2max: 20000.0      # meters (north edge, including ghost)
-    x3min: -30000.0     # meters (west edge, including ghost)
-    x3max: 30000.0      # meters (east edge, including ghost)
+    x2min: -20000.0     # meters (west edge, including ghost)
+    x2max: 20000.0      # meters (east edge, including ghost)
+    x3min: -30000.0     # meters (south edge, including ghost)
+    x3max: 30000.0      # meters (north edge, including ghost)
   cells:
     nx1: 100            # number of interior cells in Z direction
-    nx2: 200            # number of interior cells in Y direction
-    nx3: 300            # number of interior cells in X direction
+    nx2: 200            # number of interior cells in X direction
+    nx3: 300            # number of interior cells in Y direction
     nghost: 3           # number of ghost cells on each side
   center_latitude: 32.5    # degrees north (center of domain)
   center_longitude: -106.3 # degrees east (center of domain)
@@ -45,8 +45,8 @@ geometry:
 ### Coordinate System
 
 - **x1**: Z direction (vertical, height in meters, positive upward)
-- **x2**: Y direction (north-south, distance in meters, positive northward)
-- **x3**: X direction (east-west, distance in meters, positive eastward)
+- **x2**: X direction (east-west / longitude, distance in meters, positive eastward)
+- **x3**: Y direction (north-south / latitude, distance in meters, positive northward)
 
 ### Ghost Zones
 
@@ -92,24 +92,24 @@ The output NetCDF file contains:
 
 - `time`: Number of time steps
 - `x1`: Number of cell centers in Z direction (including ghost)
-- `x2`: Number of cell centers in Y direction (including ghost)
-- `x3`: Number of cell centers in X direction (including ghost)
+- `x2`: Number of cell centers in X direction (including ghost)
+- `x3`: Number of cell centers in Y direction (including ghost)
 - `x1f`: Number of cell interfaces in Z direction (x1 + 1)
-- `x2f`: Number of cell interfaces in Y direction (x2 + 1)
-- `x3f`: Number of cell interfaces in X direction (x3 + 1)
+- `x2f`: Number of cell interfaces in X direction (x2 + 1)
+- `x3f`: Number of cell interfaces in Y direction (x3 + 1)
 
 ### Coordinates
 
 **Cell Centers** (where variables are defined):
 - `time`: Time values (hours since reference)
 - `x1(x1)`: Height at cell centers [meters]
-- `x2(x2)`: Y coordinate at cell centers [meters]
-- `x3(x3)`: X coordinate at cell centers [meters]
+- `x2(x2)`: X coordinate at cell centers [meters]
+- `x3(x3)`: Y coordinate at cell centers [meters]
 
 **Cell Interfaces** (cell boundaries):
 - `x1f(x1f)`: Height at cell interfaces [meters]
-- `x2f(x2f)`: Y coordinate at cell interfaces [meters]
-- `x3f(x3f)`: X coordinate at cell interfaces [meters]
+- `x2f(x2f)`: X coordinate at cell interfaces [meters]
+- `x3f(x3f)`: Y coordinate at cell interfaces [meters]
 
 Note: `len(x1f) = len(x1) + 1`, same for x2f and x3f.
 

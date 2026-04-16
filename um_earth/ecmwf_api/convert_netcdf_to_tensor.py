@@ -7,12 +7,12 @@ for use in dynamic atmospheric simulations. It reads each block file, processes 
 variables, and saves them as LibTorch-compatible tensors.
 
 The script performs the following operations:
-1. Reads variables from NetCDF file: rho, w, v, u, p, q, ciwc, clwc, cswc, crwc
+1. Reads variables from NetCDF file: rho, w, u, v, p, q, ciwc, clwc, cswc, crwc
 2. Combines cloud variables:
    - ciwc + clwc -> q2 (cloud ice + cloud liquid water)
    - cswc + crwc -> q3 (cloud snow + cloud rain water)
 3. Aggregates variables into hydro_w tensor with ordering:
-   (rho, w, v, u, p, q, q2, q3) -> shape (time, nvar=8, x3, x2, x1)
+   (rho, w, u, v, p, q, q2, q3) -> shape (time, nvar=8, x3, x2, x1)
 4. Saves tensor to .part file using torch.jit.script for LibTorch compatibility
 
 Usage:
@@ -33,7 +33,7 @@ Output:
     - .part files with a similar basename as the input .nc files
     - Each file contains a TensorModule with 'hydro_w' tensor
     - hydro_w shape: (time, nvar=8, x3, x2, x1)
-    - Variable order in nvar dimension: rho, w, v, u, p, q, q2, q3
+    - Variable order in nvar dimension: rho, w, u, v, p, q, q2, q3
 """
 
 import argparse
@@ -249,7 +249,7 @@ def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None)
     hydro_w_np = np.transpose(hydro_w_np, (0, 1, 4, 3, 2))
     
     print(f"  Created hydro_w tensor: shape {hydro_w_np.shape}")
-    print(f"  Variable order: rho, w, v, u, p, q, q2, q3")
+    print(f"  Variable order: rho, w, u, v, p, q, q2, q3")
     print(f"  Axis order: (time, nvar, x3, x2, x1)")
     
     # Convert to PyTorch tensor

@@ -42,12 +42,12 @@ def create_sample_netcdf(filename, n_time=4, n_x1=56, n_x2=56, n_x3=56):
         x2 = nc.createVariable('x2', 'f8', ('x2',))
         x2[:] = np.linspace(0, 28000, n_x2)
         x2.units = 'meters'
-        x2.long_name = 'Y coordinate (North-South)'
+        x2.long_name = 'X coordinate (East-West)'
         
         x3 = nc.createVariable('x3', 'f8', ('x3',))
         x3[:] = np.linspace(0, 28000, n_x3)
         x3.units = 'meters'
-        x3.long_name = 'X coordinate (East-West)'
+        x3.long_name = 'Y coordinate (North-South)'
         
         # Create interface coordinates
         x1f = nc.createVariable('x1f', 'f8', ('x1f',))
@@ -163,7 +163,7 @@ def main():
         
         print(f"\nTensor shape: {hydro_w.shape}")
         print(f"Tensor dtype: {hydro_w.dtype}")
-        print(f"Variable order: rho, w, v, u, p, q, q2, q3")
+        print(f"Variable order: rho, w, u, v, p, q, q2, q3")
         
         # Show some statistics
         print("\nVariable statistics:")

@@ -196,8 +196,8 @@ def calculate_latlon_limits(geometry: Dict) -> Tuple[float, float, float, float]
     
     The domain uses Cartesian coordinates where:
     - x1 is Z direction (vertical, in meters)
-    - x2 is Y direction (north-south, in meters)
-    - x3 is X direction (east-west, in meters)
+    - x2 is X direction (east-west / longitude, in meters)
+    - x3 is Y direction (north-south / latitude, in meters)
     
     The bounds include ghost zones. We need to calculate the lat-lon limits
     that cover the entire domain including ghost zones.
@@ -212,13 +212,13 @@ def calculate_latlon_limits(geometry: Dict) -> Tuple[float, float, float, float]
     center_lat = geometry['center_latitude']
     center_lon = geometry['center_longitude']
     
-    # Extract Y (north-south) and X (east-west) bounds
-    # x2 is Y direction (north-south in meters)
-    # x3 is X direction (east-west in meters)
-    y_min = bounds['x2min']  # meters
-    y_max = bounds['x2max']  # meters
-    x_min = bounds['x3min']  # meters
-    x_max = bounds['x3max']  # meters
+    # Extract X (east-west) and Y (north-south) bounds
+    # x2 is X direction (east-west in meters)
+    # x3 is Y direction (north-south in meters)
+    xlon_min = bounds['x2min']  # meters
+    xlon_max = bounds['x2max']  # meters
+    ylat_min = bounds['x3min']  # meters
+    ylat_max = bounds['x3max']  # meters
     
     # Convert meters to degrees using approximate conversion
     # At the equator: 1 degree latitude ≈ 111,320 meters
@@ -230,12 +230,12 @@ def calculate_latlon_limits(geometry: Dict) -> Tuple[float, float, float, float]
     meters_per_degree_lat = 111320.0  # meters per degree latitude
     meters_per_degree_lon = 111320.0 * math.cos(math.radians(center_lat))
     # Calculate extents relative to the domain center.
-    y_extent = (y_max - y_min) / 2.0
-    x_extent = (x_max - x_min) / 2.0
+    xlon_extent = (xlon_max - xlon_min) / 2.0
+    ylat_extent = (ylat_max - ylat_min) / 2.0
     
     # Convert to lat-lon extents from center
-    lat_extent = y_extent / meters_per_degree_lat
-    lon_extent = x_extent / meters_per_degree_lon
+    lat_extent = ylat_extent / meters_per_degree_lat
+    lon_extent = xlon_extent / meters_per_degree_lon
     
     # Calculate lat-lon limits
     latmin = center_lat - lat_extent
@@ -508,8 +508,8 @@ The script will:
         print(f"  Center: ({geometry['center_latitude']}°, {geometry['center_longitude']}°)")
         print(f"  Domain bounds (with ghost zones):")
         print(f"    x1 (Z): [{geometry['bounds']['x1min']}, {geometry['bounds']['x1max']}] m")
-        print(f"    x2 (Y): [{geometry['bounds']['x2min']}, {geometry['bounds']['x2max']}] m")
-        print(f"    x3 (X): [{geometry['bounds']['x3min']}, {geometry['bounds']['x3max']}] m")
+        print(f"    x2 (X): [{geometry['bounds']['x2min']}, {geometry['bounds']['x2max']}] m")
+        print(f"    x3 (Y): [{geometry['bounds']['x3min']}, {geometry['bounds']['x3max']}] m")
         print(f"  Grid cells: nx1={geometry['cells']['nx1']}, nx2={geometry['cells']['nx2']}, "
               f"nx3={geometry['cells']['nx3']}, nghost={geometry['cells']['nghost']}")
         

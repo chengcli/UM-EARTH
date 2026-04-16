@@ -59,14 +59,14 @@ geometry:
   bounds:
     x1min: 0.0          # meters (bottom of domain, including ghost)
     x1max: 10000.0      # meters (top of domain, including ghost)
-    x2min: -20000.0     # meters (south edge, including ghost)
-    x2max: 20000.0      # meters (north edge, including ghost)
-    x3min: -30000.0     # meters (west edge, including ghost)
-    x3max: 30000.0      # meters (east edge, including ghost)
+    x2min: -20000.0     # meters (west edge, including ghost)
+    x2max: 20000.0      # meters (east edge, including ghost)
+    x3min: -30000.0     # meters (south edge, including ghost)
+    x3max: 30000.0      # meters (north edge, including ghost)
   cells:
     nx1: 100            # number of interior cells in Z direction
-    nx2: 200            # number of interior cells in Y direction
-    nx3: 300            # number of interior cells in X direction
+    nx2: 200            # number of interior cells in X direction
+    nx3: 300            # number of interior cells in Y direction
     nghost: 3           # number of ghost cells on each side
   center_latitude: 32.5    # degrees north (center of domain)
   center_longitude: -106.3 # degrees east (center of domain)
@@ -79,8 +79,8 @@ integration:
 ### Coordinate System
 
 - **x1**: Z direction (vertical, height in meters, positive upward)
-- **x2**: Y direction (north-south, distance in meters, positive northward)
-- **x3**: X direction (east-west, distance in meters, positive eastward)
+- **x2**: X direction (east-west / longitude, distance in meters, positive eastward)
+- **x3**: Y direction (north-south / latitude, distance in meters, positive northward)
 
 ### Domain Specifications
 

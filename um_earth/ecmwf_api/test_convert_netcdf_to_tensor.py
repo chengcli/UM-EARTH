@@ -237,7 +237,7 @@ class TestConvertNetCDFToTensor(unittest.TestCase):
         
         # Verify output file exists
         self.assertTrue(os.path.exists(output_file))
-        self.assertTrue(output_file.endswith('.restart'))
+        self.assertTrue(output_file.endswith('.part'))
         
         # Load and verify tensor
         loaded = torch.jit.load(output_file)
@@ -326,10 +326,10 @@ class TestConvertNetCDFToTensor(unittest.TestCase):
         loaded = torch.jit.load(output_file)
         hydro_w = loaded.hydro_w
         
-        # Check variable order: rho, w, v, u, p, q, q2, q3
+        # Check variable order: rho, w, u, v, p, q, q2, q3
         # q2 = ciwc + clwc = 7 + 8 = 15
         # q3 = cswc + crwc = 9 + 10 = 19
-        expected_values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 15.0, 19.0]
+        expected_values = [1.0, 2.0, 4.0, 3.0, 5.0, 6.0, 15.0, 19.0]
         
         for i, expected in enumerate(expected_values):
             actual = hydro_w[0, i, 0, 0, 0].item()
@@ -537,10 +537,10 @@ class TestConvertDirectory(unittest.TestCase):
         # Should have 3 output files
         self.assertEqual(len(output_files), 3)
         
-        # All files should exist and have .restart extension
+        # All files should exist and have .part extension
         for output_file in output_files:
             self.assertTrue(os.path.exists(output_file))
-            self.assertTrue(output_file.endswith('.restart'))
+            self.assertTrue(output_file.endswith('.part'))
     
     def test_custom_output_directory(self):
         """Test conversion with custom output directory."""

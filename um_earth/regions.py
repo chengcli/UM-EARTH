@@ -43,8 +43,8 @@ class RegionDefinition:
         lon_min, lat_min, lon_max, lat_max = self.bounds
         avg_lat = (lat_min + lat_max) / 2.0
         return {
-            "x2_extent": (lat_max - lat_min) * 111000.0,
-            "x3_extent": (lon_max - lon_min) * 111000.0 * math.cos(math.radians(avg_lat)),
+            "x2_extent": (lon_max - lon_min) * 111000.0 * math.cos(math.radians(avg_lat)),
+            "x3_extent": (lat_max - lat_min) * 111000.0,
         }
 
 
@@ -141,4 +141,3 @@ def load_region(
         available = ", ".join(sorted(regions))
         raise ValueError(f"Unknown location '{location_id}'. Available: {available}")
     return regions[location_id]
-

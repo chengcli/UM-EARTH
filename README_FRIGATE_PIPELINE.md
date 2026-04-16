@@ -238,6 +238,15 @@ env CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29533 PYTHONFAULTHANDLER=1 \
 For production runs, use a detached launcher that survives logout. `tmux` is the
 most reliable option in this environment.
 
+The repo also carries maintained helper launchers:
+
+* `scripts/run_frigate_prepare.sh YYYYMMDD`
+* `scripts/run_frigate_pipeline.sh YYYYMMDD`
+
+These mirror the current `pte1b` forecast workflow and use the axis-correct
+April 14 template run (`pte1b-2026-04-14-axisfix`) when copying the base
+configuration and topography products.
+
 ### Example Script: Low-Resolution Two-GPU Run
 
 ```bash
@@ -298,6 +307,49 @@ tmux new-session -d -s pte1b_20260413_refined_2gpu /usr/bin/bash /tmp/pte1b_2026
 tmux ls
 tmux attach -t pte1b_20260413_refined_2gpu
 tail -n 80 /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_refined_ghost_24h_2gpu/run.log
+```
+
+## Daily Automation
+
+A daily refined `pte1b` run for a 48-hour forecast window is installed via
+`crontab` and launches at `6:00 PM` Eastern Time every day.
+
+Repo files:
+
+* launcher: `/home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh`
+* crontab file: `/home/chengcli/scix/workspace/UM-EARTH/scripts/cron/pte1b_refined_48h.crontab`
+* cron log target: `/home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log`
+
+Active crontab entry:
+
+```cron
+CRON_TZ=America/Detroit
+0 18 * * * /home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh >> /home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log 2>&1
+```
+
+Behavior:
+
+* target date defaults to the current ET calendar day
+* source forecast directory is `/home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data/YYYYMMDD`
+* run directory is `/home/chengcli/data/2025.FRIGATE/runs/pte1b-YYYY-MM-DD`
+* the template copied for config/topography is `/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-14-axisfix`
+* preparation uses forecast mode with `--nY 2 --nX 1`
+* runtime uses two GPUs with `torchrun --nproc-per-node=2`
+* runtime mode is `--refinement-mode staged --forcing-mode ghost`
+* staged refinement occurs at `06h` and `12h`, with a ghost-only update at `18h`
+* `--prediction-duration 108000` is used so the total forecast span is 48 hours
+
+Manual test example:
+
+```bash
+/home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh 20260414
+```
+
+Install or refresh the cron job with:
+
+```bash
+crontab /home/chengcli/scix/workspace/UM-EARTH/scripts/cron/pte1b_refined_48h.crontab
+crontab -l
 ```
 
 ## Notes
