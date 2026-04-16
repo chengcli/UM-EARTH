@@ -618,11 +618,6 @@ def regrid_era5_to_cartesian(
         # Assume it's already numeric
         time_hours = time.astype(float)
     
-    regridded_vars = {
-        name: np.transpose(values, (0, 1, 3, 2))
-        for name, values in regridded_vars.items()
-    }
-
     output_coords = {
         'time': time_hours,
         'x1': x1,      # Cell centers
