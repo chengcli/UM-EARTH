@@ -3,7 +3,7 @@ set -euo pipefail
 
 BASE_DIR=/home/chengcli/data/2025.FRIGATE
 RUNS_DIR="$BASE_DIR/runs"
-TEMPLATE_RUN="$RUNS_DIR/pte1b-2026-04-14"
+TEMPLATE_RUN="$RUNS_DIR/pte1b-2026-04-14-axisfix"
 WORKSPACE=/home/chengcli/scix/workspace/UM-EARTH
 KML_FILE="$BASE_DIR/pte1b.kml"
 

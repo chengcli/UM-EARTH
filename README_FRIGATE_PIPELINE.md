@@ -238,6 +238,15 @@ env CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29533 PYTHONFAULTHANDLER=1 \
 For production runs, use a detached launcher that survives logout. `tmux` is the
 most reliable option in this environment.
 
+The repo also carries maintained helper launchers:
+
+* `scripts/run_frigate_prepare.sh YYYYMMDD`
+* `scripts/run_frigate_pipeline.sh YYYYMMDD`
+
+These mirror the current `pte1b` forecast workflow and use the axis-correct
+April 14 template run (`pte1b-2026-04-14-axisfix`) when copying the base
+configuration and topography products.
+
 ### Example Script: Low-Resolution Two-GPU Run
 
 ```bash
@@ -305,17 +314,17 @@ tail -n 80 /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_refin
 A daily refined `pte1b` run for a 48-hour forecast window is installed via
 `crontab` and launches at `6:00 PM` Eastern Time every day.
 
-Installed files:
+Repo files:
 
-* launcher: `/home/chengcli/data/2025.FRIGATE/run_daily_pte1b_refined_48h.sh`
-* crontab file: `/home/chengcli/data/2025.FRIGATE/cron/pte1b_refined_48h.crontab`
-* cron log: `/home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log`
+* launcher: `/home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh`
+* crontab file: `/home/chengcli/scix/workspace/UM-EARTH/scripts/cron/pte1b_refined_48h.crontab`
+* cron log target: `/home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log`
 
 Active crontab entry:
 
 ```cron
 CRON_TZ=America/Detroit
-0 18 * * * /home/chengcli/data/2025.FRIGATE/run_daily_pte1b_refined_48h.sh >> /home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log 2>&1
+0 18 * * * /home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh >> /home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log 2>&1
 ```
 
 Behavior:
@@ -323,6 +332,7 @@ Behavior:
 * target date defaults to the current ET calendar day
 * source forecast directory is `/home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data/YYYYMMDD`
 * run directory is `/home/chengcli/data/2025.FRIGATE/runs/pte1b-YYYY-MM-DD`
+* the template copied for config/topography is `/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-14-axisfix`
 * preparation uses forecast mode with `--nY 2 --nX 1`
 * runtime uses two GPUs with `torchrun --nproc-per-node=2`
 * runtime mode is `--refinement-mode staged --forcing-mode ghost`
@@ -332,13 +342,13 @@ Behavior:
 Manual test example:
 
 ```bash
-/home/chengcli/data/2025.FRIGATE/run_daily_pte1b_refined_48h.sh 20260414
+/home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh 20260414
 ```
 
 Install or refresh the cron job with:
 
 ```bash
-crontab /home/chengcli/data/2025.FRIGATE/cron/pte1b_refined_48h.crontab
+crontab /home/chengcli/scix/workspace/UM-EARTH/scripts/cron/pte1b_refined_48h.crontab
 crontab -l
 ```
 
