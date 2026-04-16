@@ -2,7 +2,8 @@
 ECMWF ERA5 Regridding Module
 
 This module provides functions to regrid ECMWF ERA5 data from pressure-lat-lon
-grids to uniform Cartesian distance grids (height-Y-X) for atmospheric modeling.
+grids to uniform Cartesian distance grids (height-west-east-south-north) for
+atmospheric modeling.
 
 Functions:
     compute_dz_from_plev: Compute layer thickness from pressure levels
@@ -11,7 +12,7 @@ Functions:
     latlon_to_xy: Convert lat/lon to local Cartesian coordinates
     vertical_interp_to_z: Vertical interpolation to uniform height grid
     horizontal_regrid_xy: Horizontal regridding on regular grids
-    regrid_pressure_to_height: Complete pipeline from (T,P,Lat,Lon) to (T,Z,Y,X)
+    regrid_pressure_to_height: Complete pipeline from (T,P,Lat,Lon) to (T,Z,X,Y)
     regrid_multiple_variables: Regrid multiple variables in parallel for improved performance
     regrid_topography: Regrid topographic elevation to distance grids
     save_regridded_data_to_netcdf: Save regridded atmospheric data to NetCDF with metadata
@@ -140,19 +141,21 @@ def latlon_to_xy(
     lons: np.ndarray,   # (Lon,) longitude [degrees]
     planet_radius: float,  # planet radius [m]
     lat_center: Optional[float] = None,  # center latitude for projection [degrees]
+    lon_center: Optional[float] = None,  # center longitude for projection [degrees]
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Convert latitude/longitude to local Cartesian coordinates (Y, X) in meters.
+    Convert latitude/longitude to local Cartesian distance coordinates in meters.
 
     Args:
         lats: (Lat,) latitude array [degrees]
         lons: (Lon,) longitude array [degrees]
         planet_radius: radius of the planet [m]
         lat_center: center latitude for projection [degrees]. If None, uses midpoint of lats.
+        lon_center: center longitude for projection [degrees]. If None, uses midpoint of lons.
 
     Returns:
-        Y: (Lat,) Y-coordinate in meters (North-South direction)
-        X: (Lon,) X-coordinate in meters (East-West direction)
+        Y: (Lat,) south-north distance in meters relative to ``lat_center``
+        X: (Lon,) west-east distance in meters relative to ``lon_center``
     """
     if lat_center is None:
         lat_center = 0.5 * (lats[0] + lats[-1])
@@ -162,11 +165,13 @@ def latlon_to_xy(
     lons_rad = np.radians(lons)
     lat_center_rad = np.radians(lat_center)
 
-    # Y is simply arc length from center latitude
+    # Y is south-north arc length from the projection center latitude.
     Y = (lats_rad - lat_center_rad) * planet_radius
 
-    # X uses the cosine of the center latitude for the projection
-    lon_center_rad = np.radians(0.5 * (lons[0] + lons[-1]))
+    # X is west-east arc length referenced to the projection center longitude.
+    if lon_center is None:
+        lon_center = 0.5 * (lons[0] + lons[-1])
+    lon_center_rad = np.radians(lon_center)
     X = (lons_rad - lon_center_rad) * planet_radius * np.cos(lat_center_rad)
 
     return Y, X
@@ -313,19 +318,19 @@ def horizontal_regrid_xy(
     bounds_error: bool = True
 ) -> np.ndarray:
     """
-    Regrid a 2D field f(x,y) defined on 1D grids x,y to a new regular grid x_out,y_out
-    using SciPy RegularGridInterpolator (cubic or linear depending on grid size).
+    Regrid a 2D field ``f(x, y)`` defined on west-east and south-north distance
+    grids to a new regular Cartesian grid ``(x_out, y_out)``.
 
     Args:
-        x: (X,) input x-coordinate
-        y: (Y,) input y-coordinate
-        field: (X, Y) on the original grids.
-        x_out: (X_out,) output x-coordinate
-        y_out: (Y_out,) output y-coordinate
+        x: (X,) input west-east distance coordinate
+        y: (Y,) input south-north distance coordinate
+        field: (X, Y) field on the original distance grid
+        x_out: (X_out,) output west-east distance coordinate
+        y_out: (Y_out,) output south-north distance coordinate
         bounds_error: If True, raise error when interpolation becomes extrapolation
 
     Returns:
-        field_on_out: (X_out, Y_out)
+        field_on_out: (X_out, Y_out) on west-east / south-north coordinates
     """
     # Check bounds to prevent extrapolation
     if bounds_error:
@@ -369,22 +374,22 @@ def _regrid_horizontal_slice(args):
     Helper function for parallel horizontal regridding of a single (time, height) slice.
     
     Args:
-        args: Tuple of (ti, zi, slab, X_coord, Y_coord, x3f_shifted, x2f_shifted, bounds_error)
+        args: Tuple of (ti, zi, slab, X_coord, Y_coord, x2f_shifted, x3f_shifted, bounds_error)
         
     Returns:
         Tuple of (ti, zi, regridded_slab)
     """
-    ti, zi, slab, X_coord, Y_coord, x3f_shifted, x2f_shifted, bounds_error = args
+    ti, zi, slab, X_coord, Y_coord, x2f_shifted, x3f_shifted, bounds_error = args
     
     # Skip if the slab is all NaNs (e.g., height level above all data)
     if np.all(np.isnan(slab)):
         return (ti, zi, None)
     
-    # Note: horizontal_regrid_xy expects (X, Y) order, so we transpose
-    slab_t = slab.T  # (Lon, Lat) -> (X, Y) ordering
+    # horizontal_regrid_xy expects (X, Y) order, so we transpose the source slab
+    slab_t = slab.T  # (Lat, Lon) -> (X, Y)
     result = horizontal_regrid_xy(
-        X_coord, Y_coord, slab_t, x3f_shifted, x2f_shifted, bounds_error=bounds_error
-    ).T  # Transpose back to (Y, X)
+        X_coord, Y_coord, slab_t, x2f_shifted, x3f_shifted, bounds_error=bounds_error
+    )
     
     return (ti, zi, result)
 
@@ -397,13 +402,15 @@ def regrid_pressure_to_height(
     lats: np.ndarray,          # (Lat,) latitude [degrees]
     lons: np.ndarray,          # (Lon,) longitude [degrees]
     x1f: np.ndarray,           # (Z,) vertical height coordinate [m]
-    x2f: np.ndarray,           # (Y,) horizontal Y-coordinate [m]
-    x3f: np.ndarray,           # (X,) horizontal X-coordinate [m]
+    x2f: np.ndarray,           # (X,) horizontal X-coordinate [m]
+    x3f: np.ndarray,           # (Y,) horizontal Y-coordinate [m]
     planet_grav: float,        # gravity constant [m/s^2]
     planet_radius: float,      # radius of the planet [m]
     bounds_error: bool = True, # If True, raise error when extrapolation would occur
     z_tpll: Optional[np.ndarray] = None,  # (T, P, Lat, Lon) pre-computed heights [m]
     n_jobs: Optional[int] = None,  # Number of parallel workers (None = auto, 1 = sequential)
+    lat_center: Optional[float] = None,  # projection center latitude [degrees]
+    lon_center: Optional[float] = None,  # projection center longitude [degrees]
 ) -> np.ndarray:
     """
     Complete regridding pipeline from ECMWF ERA5 pressure-lat-lon data to distance grids.
@@ -423,8 +430,8 @@ def regrid_pressure_to_height(
         lats: (Lat,) latitude array [degrees]
         lons: (Lon,) longitude array [degrees]
         x1f: (Z,) vertical height coordinate [m]
-        x2f: (Y,) horizontal Y-coordinate [m]
-        x3f: (X,) horizontal X-coordinate [m]
+        x2f: (X,) west-east distance coordinate [m]
+        x3f: (Y,) south-north distance coordinate [m]
         planet_grav: gravity constant [m/s^2]
         planet_radius: radius of the planet [m]
         bounds_error: If True, raise error when extrapolation would occur
@@ -432,9 +439,11 @@ def regrid_pressure_to_height(
                 skips height computation (Steps 1-2) for efficiency when regridding
                 multiple variables. Compute once using compute_height_grid().
         n_jobs: Number of parallel workers (None=auto, 1=sequential, -1=all CPUs)
+        lat_center: Optional projection center latitude [degrees]. If None, uses midpoint of lats.
+        lon_center: Optional projection center longitude [degrees]. If None, uses midpoint of lons.
         
     Returns:
-        var_tzyx: (T, Z, Y, X) variable on distance grids
+        var_tzxy: (T, Z, X, Y) variable on west-east / south-north distance grids
         
     Raises:
         ValueError: If output domain exceeds input domain when bounds_error=True
@@ -478,43 +487,45 @@ def regrid_pressure_to_height(
     # Interpolate vertically (parallelized)
     var_tllz = vertical_interp_to_z(z_tllp, var_tllp, x1f, bounds_error=bounds_error, n_jobs=n_jobs)  # (T, Lat, Lon, Z)
     
-    # Step 4: Convert lat/lon to local Cartesian coordinates
-    lat_center = 0.5 * (lats[0] + lats[-1])
-    Y_coord, X_coord = latlon_to_xy(lats, lons, planet_radius, lat_center)
+    # Step 4: Convert latitude/longitude to local west-east and south-north distances.
+    Y_coord, X_coord = latlon_to_xy(lats, lons, planet_radius, lat_center, lon_center)
     
-    # Step 5: Match centers of input and output domains
-    # Center of input domain
-    Y_center_in = 0.5 * (Y_coord[0] + Y_coord[-1])
-    X_center_in = 0.5 * (X_coord[0] + X_coord[-1])
-    
-    # Center of output domain
-    Y_center_out = 0.5 * (x2f[0] + x2f[-1])
-    X_center_out = 0.5 * (x3f[0] + x3f[-1])
-    
-    # Shift output coordinates to match input center
-    x2f_shifted = x2f + (Y_center_in - Y_center_out)
-    x3f_shifted = x3f + (X_center_in - X_center_out)
+    # Step 5: Match the output distance coordinates to the source coordinate frame.
+    # With an explicit projection center, both source and output grids are already
+    # expressed in the same local Cartesian frame, so no recentering is needed.
+    if lat_center is not None or lon_center is not None:
+        x2f_shifted = x2f
+        x3f_shifted = x3f
+    else:
+        # Legacy behavior for callers that rely on midpoint-centering of the
+        # west-east and south-north distance axes.
+        Y_center_in = 0.5 * (Y_coord[0] + Y_coord[-1])
+        X_center_in = 0.5 * (X_coord[0] + X_coord[-1])
+        X_center_out = 0.5 * (x2f[0] + x2f[-1])
+        Y_center_out = 0.5 * (x3f[0] + x3f[-1])
+        x2f_shifted = x2f + (X_center_in - X_center_out)
+        x3f_shifted = x3f + (Y_center_in - Y_center_out)
     
     # Check if output domain is within input domain when bounds_error is True
     if bounds_error:
-        if x2f_shifted.min() < Y_coord.min() or x2f_shifted.max() > Y_coord.max():
+        if x2f_shifted.min() < X_coord.min() or x2f_shifted.max() > X_coord.max():
             raise ValueError(
-                f"Output Y domain [{x2f_shifted.min():.2f}, {x2f_shifted.max():.2f}] m "
-                f"exceeds input Y domain [{Y_coord.min():.2f}, {Y_coord.max():.2f}] m. "
+                f"Output X domain [{x2f_shifted.min():.2f}, {x2f_shifted.max():.2f}] m "
+                f"exceeds input X domain [{X_coord.min():.2f}, {X_coord.max():.2f}] m. "
                 f"Interpolated domain must be embedded within or equal to original domain."
             )
-        if x3f_shifted.min() < X_coord.min() or x3f_shifted.max() > X_coord.max():
+        if x3f_shifted.min() < Y_coord.min() or x3f_shifted.max() > Y_coord.max():
             raise ValueError(
-                f"Output X domain [{x3f_shifted.min():.2f}, {x3f_shifted.max():.2f}] m "
-                f"exceeds input X domain [{X_coord.min():.2f}, {X_coord.max():.2f}] m. "
+                f"Output Y domain [{x3f_shifted.min():.2f}, {x3f_shifted.max():.2f}] m "
+                f"exceeds input Y domain [{Y_coord.min():.2f}, {Y_coord.max():.2f}] m. "
                 f"Interpolated domain must be embedded within or equal to original domain."
             )
     
     # Step 6: Horizontal interpolation for each time and height level (parallelized)
     Z = len(x1f)
-    Y_out = len(x2f)
-    X_out = len(x3f)
-    var_tzyx = np.full((T, Z, Y_out, X_out), np.nan, dtype=var_tpll.dtype)
+    X_out = len(x2f)
+    Y_out = len(x3f)
+    var_tzxy = np.full((T, Z, X_out, Y_out), np.nan, dtype=var_tpll.dtype)
     
     # Determine number of jobs for horizontal regridding
     n_slices = T * Z
@@ -532,21 +543,21 @@ def regrid_pressure_to_height(
         # Sequential execution
         for ti in range(T):
             for zi in range(Z):
-                slab = var_tllz[ti, :, :, zi]  # (Lat, Lon)
+                slab = var_tllz[ti, :, :, zi]  # (latitude, longitude)
                 
                 # Skip if the slab is all NaNs (e.g., height level above all data)
                 if np.all(np.isnan(slab)):
                     continue
                 
-                # Note: horizontal_regrid_xy expects (X, Y) order, so we transpose
-                slab_t = slab.T  # (Lon, Lat) -> (X, Y) ordering
-                var_tzyx[ti, zi, :, :] = horizontal_regrid_xy(
-                    X_coord, Y_coord, slab_t, x3f_shifted, x2f_shifted, bounds_error=bounds_error
-                ).T  # Transpose back to (Y, X)
+                # horizontal_regrid_xy expects west-east first, south-north second.
+                slab_t = slab.T  # (latitude, longitude) -> (west-east, south-north)
+                var_tzxy[ti, zi, :, :] = horizontal_regrid_xy(
+                    X_coord, Y_coord, slab_t, x2f_shifted, x3f_shifted, bounds_error=bounds_error
+                )
     else:
         # Parallel execution
         args_list = [
-            (ti, zi, var_tllz[ti, :, :, zi], X_coord, Y_coord, x3f_shifted, x2f_shifted, bounds_error)
+            (ti, zi, var_tllz[ti, :, :, zi], X_coord, Y_coord, x2f_shifted, x3f_shifted, bounds_error)
             for ti in range(T) for zi in range(Z)
         ]
         
@@ -556,9 +567,9 @@ def regrid_pressure_to_height(
         # Collect results
         for ti, zi, result in results:
             if result is not None:
-                var_tzyx[ti, zi, :, :] = result
-    
-    return var_tzyx
+                var_tzxy[ti, zi, :, :] = result
+
+    return var_tzxy
 
 
 def _regrid_single_variable(args):
@@ -571,13 +582,18 @@ def _regrid_single_variable(args):
     Returns:
         Tuple of (variable_name, regridded_data)
     """
-    (var_name, var_tpll, rho_tpll, topo_ll, plev, lats, lons, 
-     x1f, x2f, x3f, planet_grav, planet_radius, bounds_error, z_tpll, n_jobs) = args
+    (var_name, var_tpll, rho_tpll, topo_ll, plev, lats, lons,
+     x1f, x2f, x3f, planet_grav, planet_radius, bounds_error, z_tpll, n_jobs,
+     lat_center, lon_center) = args
     
     result = regrid_pressure_to_height(
         var_tpll, rho_tpll, topo_ll, plev, lats, lons,
         x1f, x2f, x3f, planet_grav, planet_radius,
-        bounds_error=bounds_error, z_tpll=z_tpll, n_jobs=n_jobs
+        bounds_error=bounds_error,
+        z_tpll=z_tpll,
+        n_jobs=n_jobs,
+        lat_center=lat_center,
+        lon_center=lon_center,
     )
     
     return (var_name, result)
@@ -591,13 +607,15 @@ def regrid_multiple_variables(
     lats: np.ndarray,                  # (Lat,) latitude [degrees]
     lons: np.ndarray,                  # (Lon,) longitude [degrees]
     x1f: np.ndarray,                   # (Z,) vertical height coordinate [m]
-    x2f: np.ndarray,                   # (Y,) horizontal Y-coordinate [m]
-    x3f: np.ndarray,                   # (X,) horizontal X-coordinate [m]
+    x2f: np.ndarray,                   # (X,) horizontal X-coordinate [m]
+    x3f: np.ndarray,                   # (Y,) horizontal Y-coordinate [m]
     planet_grav: float,                # gravity constant [m/s^2]
     planet_radius: float,              # radius of the planet [m]
     bounds_error: bool = True,         # If True, raise error when extrapolation would occur
     z_tpll: Optional[np.ndarray] = None,  # (T, P, Lat, Lon) pre-computed heights [m]
     n_jobs: Optional[int] = None,      # Number of parallel workers (prioritizes across variables)
+    lat_center: Optional[float] = None,  # projection center latitude [degrees]
+    lon_center: Optional[float] = None,  # projection center longitude [degrees]
 ) -> Dict[str, np.ndarray]:
     """
     Regrid multiple atmospheric variables in parallel for improved performance.
@@ -613,8 +631,8 @@ def regrid_multiple_variables(
         lats: (Lat,) latitude array [degrees]
         lons: (Lon,) longitude array [degrees]
         x1f: (Z,) vertical height coordinate [m]
-        x2f: (Y,) horizontal Y-coordinate [m]
-        x3f: (X,) horizontal X-coordinate [m]
+        x2f: (X,) west-east distance coordinate [m]
+        x3f: (Y,) south-north distance coordinate [m]
         planet_grav: gravity constant [m/s^2]
         planet_radius: radius of the planet [m]
         bounds_error: If True, raise error when extrapolation would occur
@@ -623,9 +641,12 @@ def regrid_multiple_variables(
         n_jobs: Number of parallel workers. None=auto (uses all CPUs), 1=sequential,
                 -1=all CPUs. The system prioritizes parallelizing across variables first,
                 then within each variable if workers are available.
+        lat_center: Optional projection center latitude [degrees]. If None, uses midpoint of lats.
+        lon_center: Optional projection center longitude [degrees]. If None, uses midpoint of lons.
         
     Returns:
-        Dictionary mapping variable names to regridded (T, Z, Y, X) arrays
+        Dictionary mapping variable names to regridded (T, Z, X, Y) arrays
+        on west-east / south-north distance grids
         
     Raises:
         ValueError: If output domain exceeds input domain when bounds_error=True
@@ -679,14 +700,19 @@ def regrid_multiple_variables(
             results[var_name] = regrid_pressure_to_height(
                 var_tpll, rho_tpll, topo_ll, plev, lats, lons,
                 x1f, x2f, x3f, planet_grav, planet_radius,
-                bounds_error=bounds_error, z_tpll=z_tpll, n_jobs=n_jobs_per_var
+                bounds_error=bounds_error,
+                z_tpll=z_tpll,
+                n_jobs=n_jobs_per_var,
+                lat_center=lat_center,
+                lon_center=lon_center,
             )
         return results
     
     # Parallel processing across variables
     args_list = [
         (var_name, var_tpll, rho_tpll, topo_ll, plev, lats, lons,
-         x1f, x2f, x3f, planet_grav, planet_radius, bounds_error, z_tpll, n_jobs_per_var)
+         x1f, x2f, x3f, planet_grav, planet_radius, bounds_error, z_tpll, n_jobs_per_var,
+         lat_center, lon_center)
         for var_name, var_tpll in variables.items()
     ]
     
@@ -703,10 +729,12 @@ def regrid_topography(
     topo_ll: np.ndarray,       # (Lat, Lon) topographic elevation [m]
     lats: np.ndarray,          # (Lat,) latitude [degrees]
     lons: np.ndarray,          # (Lon,) longitude [degrees]
-    x2f: np.ndarray,           # (Y,) horizontal Y-coordinate [m]
-    x3f: np.ndarray,           # (X,) horizontal X-coordinate [m]
+    x2f: np.ndarray,           # (X,) horizontal X-coordinate [m]
+    x3f: np.ndarray,           # (Y,) horizontal Y-coordinate [m]
     planet_radius: float,      # radius of the planet [m]
     bounds_error: bool = True, # If True, raise error when extrapolation would occur
+    lat_center: Optional[float] = None,  # projection center latitude [degrees]
+    lon_center: Optional[float] = None,  # projection center longitude [degrees]
 ) -> np.ndarray:
     """
     Regrid topographic elevation from lat/lon to distance grids.
@@ -715,13 +743,15 @@ def regrid_topography(
         topo_ll: (Lat, Lon) topographic elevation [m]
         lats: (Lat,) latitude array [degrees]
         lons: (Lon,) longitude array [degrees]
-        x2f: (Y,) horizontal Y-coordinate [m]
-        x3f: (X,) horizontal X-coordinate [m]
+        x2f: (X,) west-east distance coordinate [m]
+        x3f: (Y,) south-north distance coordinate [m]
         planet_radius: radius of the planet [m]
         bounds_error: If True, raise error when extrapolation would occur
+        lat_center: Optional projection center latitude [degrees]. If None, uses midpoint of lats.
+        lon_center: Optional projection center longitude [degrees]. If None, uses midpoint of lons.
         
     Returns:
-        topo_yx: (Y, X) topographic elevation on distance grids
+        topo_xy: (X, Y) topographic elevation on west-east / south-north grids
         
     Raises:
         ValueError: If output domain exceeds input domain when bounds_error=True
@@ -734,40 +764,42 @@ def regrid_topography(
     if lons.shape[0] != Lon:
         raise ValueError(f"lons length {lons.shape[0]} must match Lon dimension {Lon}")
     
-    # Convert lat/lon to local Cartesian coordinates
-    lat_center = 0.5 * (lats[0] + lats[-1])
-    Y_coord, X_coord = latlon_to_xy(lats, lons, planet_radius, lat_center)
+    # Convert latitude/longitude to local west-east and south-north distances.
+    Y_coord, X_coord = latlon_to_xy(lats, lons, planet_radius, lat_center, lon_center)
     
-    # Match centers
-    Y_center_in = 0.5 * (Y_coord[0] + Y_coord[-1])
-    X_center_in = 0.5 * (X_coord[0] + X_coord[-1])
-    Y_center_out = 0.5 * (x2f[0] + x2f[-1])
-    X_center_out = 0.5 * (x3f[0] + x3f[-1])
-    
-    x2f_shifted = x2f + (Y_center_in - Y_center_out)
-    x3f_shifted = x3f + (X_center_in - X_center_out)
+    # With an explicit projection center, both source and output grids are already
+    # in the same local Cartesian frame, so no recentering is needed.
+    if lat_center is not None or lon_center is not None:
+        x2f_shifted = x2f
+        x3f_shifted = x3f
+    else:
+        Y_center_in = 0.5 * (Y_coord[0] + Y_coord[-1])
+        X_center_in = 0.5 * (X_coord[0] + X_coord[-1])
+        X_center_out = 0.5 * (x2f[0] + x2f[-1])
+        Y_center_out = 0.5 * (x3f[0] + x3f[-1])
+        x2f_shifted = x2f + (X_center_in - X_center_out)
+        x3f_shifted = x3f + (Y_center_in - Y_center_out)
     
     # Check bounds
     if bounds_error:
-        if x2f_shifted.min() < Y_coord.min() or x2f_shifted.max() > Y_coord.max():
+        if x2f_shifted.min() < X_coord.min() or x2f_shifted.max() > X_coord.max():
             raise ValueError(
-                f"Output Y domain [{x2f_shifted.min():.2f}, {x2f_shifted.max():.2f}] m "
-                f"exceeds input Y domain [{Y_coord.min():.2f}, {Y_coord.max():.2f}] m."
-            )
-        if x3f_shifted.min() < X_coord.min() or x3f_shifted.max() > X_coord.max():
-            raise ValueError(
-                f"Output X domain [{x3f_shifted.min():.2f}, {x3f_shifted.max():.2f}] m "
+                f"Output X domain [{x2f_shifted.min():.2f}, {x2f_shifted.max():.2f}] m "
                 f"exceeds input X domain [{X_coord.min():.2f}, {X_coord.max():.2f}] m."
             )
+        if x3f_shifted.min() < Y_coord.min() or x3f_shifted.max() > Y_coord.max():
+            raise ValueError(
+                f"Output Y domain [{x3f_shifted.min():.2f}, {x3f_shifted.max():.2f}] m "
+                f"exceeds input Y domain [{Y_coord.min():.2f}, {Y_coord.max():.2f}] m."
+            )
     
-    # Horizontal interpolation
-    # horizontal_regrid_xy expects (X, Y) order
-    topo_t = topo_ll.T  # (Lon, Lat) -> (X, Y) ordering
-    topo_yx = horizontal_regrid_xy(
-        X_coord, Y_coord, topo_t, x3f_shifted, x2f_shifted, bounds_error=bounds_error
-    ).T  # Transpose back to (Y, X)
-    
-    return topo_yx
+    # Horizontal interpolation on west-east / south-north distance axes.
+    topo_t = topo_ll.T  # (latitude, longitude) -> (west-east, south-north)
+    topo_xy = horizontal_regrid_xy(
+        X_coord, Y_coord, topo_t, x2f_shifted, x3f_shifted, bounds_error=bounds_error
+    )
+
+    return topo_xy
 
 def save_regridded_data_to_netcdf(
     filename: str,
@@ -782,16 +814,16 @@ def save_regridded_data_to_netcdf(
     Args:
         filename: Output NetCDF file path
         variables: Dictionary of variable arrays, e.g., {'temperature': array, 'density': array}
-                  Each array should have shape (T, Z, Y, X) where:
+                  Each array should have shape (T, Z, X, Y) where:
                   - T: time dimension
                   - Z: height dimension (x1f)
-                  - X: X-coordinate dimension (x2f, East-West)
-                  - Y: Y-coordinate dimension (x3f, North-South)
+                  - X: west-east distance dimension (x2f)
+                  - Y: south-north distance dimension (x3f)
         coordinates: Dictionary with coordinate arrays:
                     - 'time': (T,) time values
                     - 'x1f': (Z,) height coordinates in meters
-                    - 'x2f': (Y,) Y-coordinates in meters
-                    - 'x3f': (X,) X-coordinates in meters
+                    - 'x2f': (X,) west-east distance coordinates in meters
+                    - 'x3f': (Y,) south-north distance coordinates in meters
         metadata: Optional dictionary with metadata to preserve (e.g., source info, units)
         processing_history: Optional processing history string to add to global attributes
         
@@ -812,13 +844,13 @@ def save_regridded_data_to_netcdf(
     with Dataset(filename, "w", format="NETCDF4") as ncfile:
         # Get dimensions from first variable
         first_var = next(iter(variables.values()))
-        T, Z, Y, X = first_var.shape
+        T, Z, X, Y = first_var.shape
         
         # Create dimensions
         ncfile.createDimension("time", T)
         ncfile.createDimension("x1", Z)  # Height dimension
-        ncfile.createDimension("x2", Y)  # X dimension in the model convention
-        ncfile.createDimension("x3", X)  # Y dimension in the model convention
+        ncfile.createDimension("x2", X)  # west-east distance dimension
+        ncfile.createDimension("x3", Y)  # south-north distance dimension
         
         # Create coordinate variables
         time_var = ncfile.createVariable("time", "f8", ("time",))
@@ -849,30 +881,32 @@ def save_regridded_data_to_netcdf(
         else:
             x1_var[:] = np.arange(Z, dtype="f8")
         
-        x2_var.axis = "Y"
-        x2_var.long_name = "y_coordinate"
+        x2_var.axis = "X"
+        x2_var.long_name = "west_east_distance"
         x2_var.units = "meters"
-        x2_var.standard_name = "projection_y_coordinate"
+        x2_var.standard_name = "projection_x_coordinate"
+        x2_var.description = "West-east distance from the local projection origin"
         if 'x2f' in coordinates:
             x2_var[:] = coordinates['x2f'].astype("f8")
         else:
-            x2_var[:] = np.arange(Y, dtype="f8")
+            x2_var[:] = np.arange(X, dtype="f8")
         
-        x3_var.axis = "X"
-        x3_var.long_name = "x_coordinate"
+        x3_var.axis = "Y"
+        x3_var.long_name = "south_north_distance"
         x3_var.units = "meters"
-        x3_var.standard_name = "projection_x_coordinate"
+        x3_var.standard_name = "projection_y_coordinate"
+        x3_var.description = "South-north distance from the local projection origin"
         if 'x3f' in coordinates:
             x3_var[:] = coordinates['x3f'].astype("f8")
         else:
-            x3_var[:] = np.arange(X, dtype="f8")
+            x3_var[:] = np.arange(Y, dtype="f8")
         
         # Create data variables
         for var_name, var_data in variables.items():
-            if var_data.shape != (T, Z, Y, X):
+            if var_data.shape != (T, Z, X, Y):
                 raise ValueError(
                     f"Variable '{var_name}' has shape {var_data.shape}, "
-                    f"expected ({T}, {Z}, {Y}, {X})"
+                    f"expected ({T}, {Z}, {X}, {Y})"
                 )
             
             var = ncfile.createVariable(var_name, "f4", ("time", "x1", "x2", "x3"))
@@ -896,9 +930,9 @@ def save_regridded_data_to_netcdf(
         # Add coordinate system information
         ncfile.coordinate_system = "Local Cartesian projection"
         ncfile.grid_description = (
-            "Distance grid with x1 (height) in meters positive upward, "
-            "x2 (X) in meters positive eastward, "
-            "x3 (Y) in meters positive northward"
+            "Distance grid with x1 height positive upward, "
+            "x2 west-east distance positive eastward, and "
+            "x3 south-north distance positive northward"
         )
         
         # Add processing history
@@ -936,14 +970,15 @@ def save_topography_to_netcdf(
     
     Args:
         filename: Output NetCDF file path
-        topography: (Y, X) topographic elevation array in meters
-        x2f: (Y,) Y-coordinates in meters
-        x3f: (X,) X-coordinates in meters
+        topography: (X, Y) topographic elevation array in meters on
+            west-east / south-north distance coordinates
+        x2f: (X,) west-east distance coordinates in meters
+        x3f: (Y,) south-north distance coordinates in meters
         metadata: Optional dictionary with metadata to preserve
         processing_history: Optional processing history string
         
     Example:
-        >>> save_topography_to_netcdf('topography.nc', topo_yx, x2f, x3f,
+        >>> save_topography_to_netcdf('topography.nc', topo_xy, x2f, x3f,
         ...                          metadata={'source': 'USGS DEM'})
     """
     try:
@@ -954,32 +989,34 @@ def save_topography_to_netcdf(
             "Install it with: pip install netCDF4"
         )
     
-    Y, X = topography.shape
-    
-    if x2f.shape[0] != Y:
-        raise ValueError(f"x2f length {x2f.shape[0]} must match Y dimension {Y}")
-    if x3f.shape[0] != X:
-        raise ValueError(f"x3f length {x3f.shape[0]} must match X dimension {X}")
+    X, Y = topography.shape
+
+    if x2f.shape[0] != X:
+        raise ValueError(f"x2f length {x2f.shape[0]} must match X dimension {X}")
+    if x3f.shape[0] != Y:
+        raise ValueError(f"x3f length {x3f.shape[0]} must match Y dimension {Y}")
     
     with Dataset(filename, "w", format="NETCDF4") as ncfile:
         # Create dimensions
-        ncfile.createDimension("x2", Y)
-        ncfile.createDimension("x3", X)
+        ncfile.createDimension("x2", X)
+        ncfile.createDimension("x3", Y)
         
         # Create coordinate variables
         x2_var = ncfile.createVariable("x2", "f8", ("x2",))
         x3_var = ncfile.createVariable("x3", "f8", ("x3",))
         
-        x2_var.axis = "Y"
-        x2_var.long_name = "y_coordinate"
+        x2_var.axis = "X"
+        x2_var.long_name = "west_east_distance"
         x2_var.units = "meters"
-        x2_var.standard_name = "projection_y_coordinate"
+        x2_var.standard_name = "projection_x_coordinate"
+        x2_var.description = "West-east distance from the local projection origin"
         x2_var[:] = x2f.astype("f8")
-        
-        x3_var.axis = "X"
-        x3_var.long_name = "x_coordinate"
+
+        x3_var.axis = "Y"
+        x3_var.long_name = "south_north_distance"
         x3_var.units = "meters"
-        x3_var.standard_name = "projection_x_coordinate"
+        x3_var.standard_name = "projection_y_coordinate"
+        x3_var.description = "South-north distance from the local projection origin"
         x3_var[:] = x3f.astype("f8")
         
         # Create topography variable
@@ -1000,8 +1037,8 @@ def save_topography_to_netcdf(
         # Add coordinate system information
         ncfile.coordinate_system = "Local Cartesian projection"
         ncfile.grid_description = (
-            "Distance grid with x2 (X) in meters positive eastward, "
-            "x3 (Y) in meters positive northward"
+            "Distance grid with x2 west-east distance positive eastward and "
+            "x3 south-north distance positive northward"
         )
         
         # Add processing history
