@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot a two-panel surface-pressure comparison for FRIGATE forecast cases."""
+"""Plot a two-panel common-level wind vector comparison for FRIGATE forecast cases."""
 
 from __future__ import annotations
 
@@ -69,55 +69,87 @@ def _load_named_topography(topo_dir: str, location_prefix: str, label: str) -> t
     return topo, lon, lat
 
 
-def _load_source_surface_pressure(source_sfc_file: str, topo_lon: np.ndarray, topo_lat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    ds = xr.open_dataset(source_sfc_file, engine="cfgrib", backend_kwargs={"indexpath": ""})
-    if "sp" not in ds:
-        raise KeyError(f"Surface GRIB file does not contain 'sp': {source_sfc_file}")
-
-    sp = ds["sp"]
-    if "step" in sp.dims:
-        sp = sp.isel(step=0)
-    if "time" in sp.dims:
-        sp = sp.isel(time=0)
-
-    lat_name = "latitude" if "latitude" in sp.coords else "lat"
-    lon_name = "longitude" if "longitude" in sp.coords else "lon"
-    lat = np.asarray(sp[lat_name].values, dtype=float)
-    lon = np.asarray(sp[lon_name].values, dtype=float)
-
+def _crop_mask(lon: np.ndarray, lat: np.ndarray, topo_lon: np.ndarray, topo_lat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     lon_pad = max(abs(float(np.diff(topo_lon).mean())), 0.25)
     lat_pad = max(abs(float(np.diff(topo_lat).mean())), 0.25)
     lon_mask = (lon >= topo_lon.min() - lon_pad) & (lon <= topo_lon.max() + lon_pad)
     lat_mask = (lat >= topo_lat.min() - lat_pad) & (lat <= topo_lat.max() + lat_pad)
-
-    sp_crop = np.asarray(sp.values[np.ix_(lat_mask, lon_mask)], dtype=float) / 100.0
-    return lon[lon_mask], lat[lat_mask], sp_crop
+    return lon_mask, lat_mask
 
 
-def _load_first_fluid_pressure(
-    runtime_file: str,
-    topo: np.ndarray,
+def _crop_field_2d(field: np.ndarray, lon_mask: np.ndarray, lat_mask: np.ndarray) -> np.ndarray:
+    return np.asarray(field[np.ix_(lat_mask, lon_mask)], dtype=float)
+
+
+def _load_source_common_pressure_wind(
+    source_pl_file: str,
+    source_sfc_file: str,
     topo_lon: np.ndarray,
     topo_lat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    sfc = xr.open_dataset(source_sfc_file, engine="cfgrib", backend_kwargs={"indexpath": ""})
+    sp = sfc["sp"]
+    if "step" in sp.dims:
+        sp = sp.isel(step=0)
+    if "time" in sp.dims:
+        sp = sp.isel(time=0)
+    lon = np.asarray(sp["longitude"].values, dtype=float)
+    lat = np.asarray(sp["latitude"].values, dtype=float)
+    lon_mask, lat_mask = _crop_mask(lon, lat, topo_lon, topo_lat)
+    sp_crop = _crop_field_2d(np.asarray(sp.values, dtype=float), lon_mask, lat_mask)
+    sfc.close()
+
+    pl = xr.open_dataset(source_pl_file, engine="cfgrib", backend_kwargs={"indexpath": ""})
+    levels = np.asarray(pl["isobaricInhPa"].values, dtype=float)
+    min_surface_pressure_hpa = float(np.nanmin(sp_crop) / 100.0)
+    valid_levels = levels[levels <= min_surface_pressure_hpa]
+    if valid_levels.size == 0:
+        raise ValueError("No ECMWF pressure level lies above the surface everywhere in the plotted domain.")
+    common_level_hpa = float(np.max(valid_levels))
+
+    u = pl["u"].sel(isobaricInhPa=common_level_hpa)
+    v = pl["v"].sel(isobaricInhPa=common_level_hpa)
+    if "step" in u.dims:
+        u = u.isel(step=0)
+        v = v.isel(step=0)
+    u_crop = _crop_field_2d(np.asarray(u.values, dtype=float), lon_mask, lat_mask)
+    v_crop = _crop_field_2d(np.asarray(v.values, dtype=float), lon_mask, lat_mask)
+    pl.close()
+    return lon[lon_mask], lat[lat_mask], u_crop, v_crop, common_level_hpa
+
+
+def _load_runtime_common_altitude_wind(
+    runtime_file: str,
+    topo: np.ndarray,
     config_file: str,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     ds = xr.open_dataset(runtime_file)
-    press = ds["press"].isel(time=0)
+    vel2 = ds["vel2"].isel(time=0)
+    vel3 = ds["vel3"].isel(time=0)
     lon, lat = _meters_to_lonlat(ds, config_file)
     x1 = np.asarray(ds["x1"].values, dtype=float)
-
-    # topo mask uses x1_center < topo_height, so the first fluid cell index is the
-    # number of x1 centers lying below the terrain height.
-    first_fluid = np.sum(x1[np.newaxis, np.newaxis, :] < topo[:, :, np.newaxis], axis=2)
-    first_fluid = np.clip(first_fluid, 0, len(x1) - 1).astype(int)
-
-    press_values = np.asarray(press.values, dtype=float)  # (x1, x3, x2)
-    surface = np.take_along_axis(press_values, first_fluid[np.newaxis, :, :], axis=0)[0] / 100.0
+    common_altitude_m = float(np.min(x1[x1 > np.max(topo)]))
+    level_index = int(np.where(x1 == common_altitude_m)[0][0])
+    u_level = np.asarray(vel2.isel(x1=level_index).values, dtype=float)
+    v_level = np.asarray(vel3.isel(x1=level_index).values, dtype=float)
     ds.close()
-    return lon, lat, surface
+    return lon, lat, u_level, v_level, common_altitude_m
 
 
-def plot_surface_pressure(
+def _quiver_slice(nx: int, ny: int, target: int = 20) -> tuple[slice, slice]:
+    step_x = max(1, nx // target)
+    step_y = max(1, ny // target)
+    return slice(None, None, step_x), slice(None, None, step_y)
+
+
+def _quiver_scale_reference(max_speed: float) -> float:
+    # Smaller scale values produce longer arrows. Tie the scale to the plotted
+    # wind range so vector length carries magnitude clearly across both panels.
+    return max(1.0, max_speed * 14.0)
+
+
+def plot_surface_wind(
+    source_pl_file: str,
     source_sfc_file: str,
     runtime_file: str,
     config_file: str,
@@ -126,40 +158,37 @@ def plot_surface_pressure(
     kml_file: str | None = None,
     output_file: str | None = None,
 ) -> None:
-    topo_for_mask, topo_lon_mask, topo_lat_mask = _load_named_topography(topo_dir, location_prefix, "2p4km")
+    topo_for_runtime, _, _ = _load_named_topography(topo_dir, location_prefix, "2p4km")
     topo_for_overlay, topo_lon, topo_lat = _load_named_topography(topo_dir, location_prefix, "0p3km")
-    left_lon, left_lat, left_pressure = _load_source_surface_pressure(source_sfc_file, topo_lon, topo_lat)
-    right_lon, right_lat, right_pressure = _load_first_fluid_pressure(
-        runtime_file, topo_for_mask, topo_lon_mask, topo_lat_mask, config_file
+
+    left_lon, left_lat, left_u, left_v, common_level_hpa = _load_source_common_pressure_wind(
+        source_pl_file, source_sfc_file, topo_lon, topo_lat
+    )
+    right_lon, right_lat, right_u, right_v, common_altitude_m = _load_runtime_common_altitude_wind(
+        runtime_file, topo_for_runtime, config_file
     )
 
+    left_speed = np.hypot(left_u, left_v)
+    right_speed = np.hypot(right_u, right_v)
     topo_km = topo_for_overlay / 1000.0
+
     topo_X, topo_Y = np.meshgrid(topo_lon, topo_lat)
     left_X, left_Y = np.meshgrid(left_lon, left_lat)
     right_X, right_Y = np.meshgrid(right_lon, right_lat)
 
-    vmin = min(float(np.nanmin(left_pressure)), float(np.nanmin(right_pressure)))
-    vmax = max(float(np.nanmax(left_pressure)), float(np.nanmax(right_pressure)))
+    vmin = min(float(np.nanmin(left_speed)), float(np.nanmin(right_speed)))
+    vmax = max(float(np.nanmax(left_speed)), float(np.nanmax(right_speed)))
     bbox = _kml_bounding_box(kml_file) if kml_file is not None else None
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.5), constrained_layout=True)
     contour = None
-    for ax, X, Y, pressure in (
-        (axes[0], left_X, left_Y, left_pressure),
-        (axes[1], right_X, right_Y, right_pressure),
-    ):
-        contour = ax.contourf(X, Y, pressure, levels=20, cmap="viridis", vmin=vmin, vmax=vmax, zorder=1)
-        contour_lines = ax.contour(
-            X,
-            Y,
-            pressure,
-            levels=10,
-            colors="black",
-            linewidths=1.5,
-            alpha=0.85,
-            zorder=2,
-        )
-        ax.clabel(contour_lines, inline=True, fontsize=8)
+    quiver_scale = _quiver_scale_reference(vmax)
+    panels = (
+        (axes[0], left_X, left_Y, left_u, left_v, left_speed, f"ECMWF {common_level_hpa:.0f} hPa"),
+        (axes[1], right_X, right_Y, right_u, right_v, right_speed, f"FRIGATE z = {common_altitude_m:.0f} m"),
+    )
+    for ax, X, Y, u, v, speed, title in panels:
+        contour = ax.contourf(X, Y, speed, levels=20, cmap="cividis", vmin=vmin, vmax=vmax, zorder=1)
         topo_lines = ax.contour(
             topo_X,
             topo_Y,
@@ -172,6 +201,25 @@ def plot_surface_pressure(
             zorder=3,
         )
         ax.clabel(topo_lines, inline=True, fontsize=7, fmt="%.1f km")
+
+        sx, sy = _quiver_slice(X.shape[1], X.shape[0], target=18)
+        ax.quiver(
+            X[sy, sx],
+            Y[sy, sx],
+            u[sy, sx],
+            v[sy, sx],
+            color="black",
+            angles="xy",
+            scale_units="xy",
+            scale=quiver_scale,
+            width=0.0022,
+            headwidth=3.0,
+            headlength=4.0,
+            headaxislength=3.5,
+            alpha=0.85,
+            zorder=4,
+        )
+        ax.set_title(title)
         ax.set_xlabel("Longitude")
         ax.grid(True, alpha=0.3, linestyle="--", linewidth=0.5)
         if bbox is not None:
@@ -184,12 +232,12 @@ def plot_surface_pressure(
                     fill=False,
                     edgecolor="red",
                     linewidth=2.0,
-                    zorder=4,
+                    zorder=5,
                 )
             )
 
     axes[0].set_ylabel("Latitude")
-    plt.colorbar(contour, ax=axes.ravel().tolist(), label="Pressure (hPa)", shrink=0.7)
+    plt.colorbar(contour, ax=axes.ravel().tolist(), label="Wind speed (m s$^{-1}$)", shrink=0.7)
 
     if output_file:
         plt.savefig(output_file, dpi=300, bbox_inches="tight")
@@ -201,9 +249,10 @@ def plot_surface_pressure(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot ECMWF surface pressure against FRIGATE first-fluid-cell pressure."
+        description="Plot ECMWF common-pressure wind against FRIGATE common-altitude wind vectors."
     )
-    parser.add_argument("source_sfc_file", help="Original ECMWF surface GRIB2 file containing 'sp'.")
+    parser.add_argument("source_pl_file", help="Original ECMWF pressure-level GRIB2 file containing u/v.")
+    parser.add_argument("source_sfc_file", help="Original ECMWF surface GRIB2 file containing sp.")
     parser.add_argument("runtime_file", help="FRIGATE runtime out1 NetCDF file.")
     parser.add_argument("--config", required=True, help="FRIGATE YAML config used for lon/lat conversion.")
     parser.add_argument("--topo-dir", required=True, help="Directory containing topography .pt files.")
@@ -212,7 +261,8 @@ def main() -> None:
     parser.add_argument("-o", "--output", help="Output plot file (PNG).")
     args = parser.parse_args()
 
-    plot_surface_pressure(
+    plot_surface_wind(
+        args.source_pl_file,
         args.source_sfc_file,
         args.runtime_file,
         args.config,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot a two-panel surface-pressure comparison for FRIGATE forecast cases."""
+"""Plot a two-panel surface-temperature comparison for FRIGATE forecast cases."""
 
 from __future__ import annotations
 
@@ -69,55 +69,55 @@ def _load_named_topography(topo_dir: str, location_prefix: str, label: str) -> t
     return topo, lon, lat
 
 
-def _load_source_surface_pressure(source_sfc_file: str, topo_lon: np.ndarray, topo_lat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _load_source_surface_temperature(
+    source_sfc_file: str,
+    topo_lon: np.ndarray,
+    topo_lat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ds = xr.open_dataset(source_sfc_file, engine="cfgrib", backend_kwargs={"indexpath": ""})
-    if "sp" not in ds:
-        raise KeyError(f"Surface GRIB file does not contain 'sp': {source_sfc_file}")
+    if "t2m" not in ds:
+        raise KeyError(f"Surface GRIB file does not contain 't2m': {source_sfc_file}")
 
-    sp = ds["sp"]
-    if "step" in sp.dims:
-        sp = sp.isel(step=0)
-    if "time" in sp.dims:
-        sp = sp.isel(time=0)
+    t2m = ds["t2m"]
+    if "step" in t2m.dims:
+        t2m = t2m.isel(step=0)
+    if "time" in t2m.dims:
+        t2m = t2m.isel(time=0)
 
-    lat_name = "latitude" if "latitude" in sp.coords else "lat"
-    lon_name = "longitude" if "longitude" in sp.coords else "lon"
-    lat = np.asarray(sp[lat_name].values, dtype=float)
-    lon = np.asarray(sp[lon_name].values, dtype=float)
+    lat_name = "latitude" if "latitude" in t2m.coords else "lat"
+    lon_name = "longitude" if "longitude" in t2m.coords else "lon"
+    lat = np.asarray(t2m[lat_name].values, dtype=float)
+    lon = np.asarray(t2m[lon_name].values, dtype=float)
 
     lon_pad = max(abs(float(np.diff(topo_lon).mean())), 0.25)
     lat_pad = max(abs(float(np.diff(topo_lat).mean())), 0.25)
     lon_mask = (lon >= topo_lon.min() - lon_pad) & (lon <= topo_lon.max() + lon_pad)
     lat_mask = (lat >= topo_lat.min() - lat_pad) & (lat <= topo_lat.max() + lat_pad)
 
-    sp_crop = np.asarray(sp.values[np.ix_(lat_mask, lon_mask)], dtype=float) / 100.0
-    return lon[lon_mask], lat[lat_mask], sp_crop
+    t2m_crop = np.asarray(t2m.values[np.ix_(lat_mask, lon_mask)], dtype=float)
+    return lon[lon_mask], lat[lat_mask], t2m_crop
 
 
-def _load_first_fluid_pressure(
+def _load_first_fluid_temperature(
     runtime_file: str,
     topo: np.ndarray,
-    topo_lon: np.ndarray,
-    topo_lat: np.ndarray,
     config_file: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ds = xr.open_dataset(runtime_file)
-    press = ds["press"].isel(time=0)
+    temp = ds["temp"].isel(time=0)
     lon, lat = _meters_to_lonlat(ds, config_file)
     x1 = np.asarray(ds["x1"].values, dtype=float)
 
-    # topo mask uses x1_center < topo_height, so the first fluid cell index is the
-    # number of x1 centers lying below the terrain height.
     first_fluid = np.sum(x1[np.newaxis, np.newaxis, :] < topo[:, :, np.newaxis], axis=2)
     first_fluid = np.clip(first_fluid, 0, len(x1) - 1).astype(int)
 
-    press_values = np.asarray(press.values, dtype=float)  # (x1, x3, x2)
-    surface = np.take_along_axis(press_values, first_fluid[np.newaxis, :, :], axis=0)[0] / 100.0
+    temp_values = np.asarray(temp.values, dtype=float)  # (x1, x3, x2)
+    surface = np.take_along_axis(temp_values, first_fluid[np.newaxis, :, :], axis=0)[0]
     ds.close()
     return lon, lat, surface
 
 
-def plot_surface_pressure(
+def plot_surface_temperature(
     source_sfc_file: str,
     runtime_file: str,
     config_file: str,
@@ -126,33 +126,31 @@ def plot_surface_pressure(
     kml_file: str | None = None,
     output_file: str | None = None,
 ) -> None:
-    topo_for_mask, topo_lon_mask, topo_lat_mask = _load_named_topography(topo_dir, location_prefix, "2p4km")
+    topo_for_mask, _, _ = _load_named_topography(topo_dir, location_prefix, "2p4km")
     topo_for_overlay, topo_lon, topo_lat = _load_named_topography(topo_dir, location_prefix, "0p3km")
-    left_lon, left_lat, left_pressure = _load_source_surface_pressure(source_sfc_file, topo_lon, topo_lat)
-    right_lon, right_lat, right_pressure = _load_first_fluid_pressure(
-        runtime_file, topo_for_mask, topo_lon_mask, topo_lat_mask, config_file
-    )
+    left_lon, left_lat, left_temp = _load_source_surface_temperature(source_sfc_file, topo_lon, topo_lat)
+    right_lon, right_lat, right_temp = _load_first_fluid_temperature(runtime_file, topo_for_mask, config_file)
 
     topo_km = topo_for_overlay / 1000.0
     topo_X, topo_Y = np.meshgrid(topo_lon, topo_lat)
     left_X, left_Y = np.meshgrid(left_lon, left_lat)
     right_X, right_Y = np.meshgrid(right_lon, right_lat)
 
-    vmin = min(float(np.nanmin(left_pressure)), float(np.nanmin(right_pressure)))
-    vmax = max(float(np.nanmax(left_pressure)), float(np.nanmax(right_pressure)))
+    vmin = min(float(np.nanmin(left_temp)), float(np.nanmin(right_temp)))
+    vmax = max(float(np.nanmax(left_temp)), float(np.nanmax(right_temp)))
     bbox = _kml_bounding_box(kml_file) if kml_file is not None else None
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.5), constrained_layout=True)
     contour = None
-    for ax, X, Y, pressure in (
-        (axes[0], left_X, left_Y, left_pressure),
-        (axes[1], right_X, right_Y, right_pressure),
+    for ax, X, Y, temp in (
+        (axes[0], left_X, left_Y, left_temp),
+        (axes[1], right_X, right_Y, right_temp),
     ):
-        contour = ax.contourf(X, Y, pressure, levels=20, cmap="viridis", vmin=vmin, vmax=vmax, zorder=1)
+        contour = ax.contourf(X, Y, temp, levels=20, cmap="inferno", vmin=vmin, vmax=vmax, zorder=1)
         contour_lines = ax.contour(
             X,
             Y,
-            pressure,
+            temp,
             levels=10,
             colors="black",
             linewidths=1.5,
@@ -189,7 +187,7 @@ def plot_surface_pressure(
             )
 
     axes[0].set_ylabel("Latitude")
-    plt.colorbar(contour, ax=axes.ravel().tolist(), label="Pressure (hPa)", shrink=0.7)
+    plt.colorbar(contour, ax=axes.ravel().tolist(), label="Temperature (K)", shrink=0.7)
 
     if output_file:
         plt.savefig(output_file, dpi=300, bbox_inches="tight")
@@ -201,10 +199,10 @@ def plot_surface_pressure(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot ECMWF surface pressure against FRIGATE first-fluid-cell pressure."
+        description="Plot ECMWF surface temperature against FRIGATE first-fluid-cell temperature."
     )
-    parser.add_argument("source_sfc_file", help="Original ECMWF surface GRIB2 file containing 'sp'.")
-    parser.add_argument("runtime_file", help="FRIGATE runtime out1 NetCDF file.")
+    parser.add_argument("source_sfc_file", help="Original ECMWF surface GRIB2 file containing 't2m'.")
+    parser.add_argument("runtime_file", help="FRIGATE runtime out2 NetCDF file.")
     parser.add_argument("--config", required=True, help="FRIGATE YAML config used for lon/lat conversion.")
     parser.add_argument("--topo-dir", required=True, help="Directory containing topography .pt files.")
     parser.add_argument("--location", required=True, help="Location prefix for topography files (e.g., pte1b).")
@@ -212,7 +210,7 @@ def main() -> None:
     parser.add_argument("-o", "--output", help="Output plot file (PNG).")
     args = parser.parse_args()
 
-    plot_surface_pressure(
+    plot_surface_temperature(
         args.source_sfc_file,
         args.runtime_file,
         args.config,

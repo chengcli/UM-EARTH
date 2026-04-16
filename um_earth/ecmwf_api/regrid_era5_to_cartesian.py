@@ -563,7 +563,9 @@ def regrid_era5_to_cartesian(
         EARTH_RADIUS,
         bounds_error=False,  # Allow NaNs outside domain
         z_tpll=z_tpll,
-        n_jobs=-1  # Use all CPUs
+        n_jobs=-1,  # Use all CPUs
+        lat_center=geometry['center_latitude'],
+        lon_center=geometry['center_longitude'],
     )
     
     print(f"   Regridded {len(regridded_vars)} variables")
@@ -595,7 +597,9 @@ def regrid_era5_to_cartesian(
         EARTH_RADIUS,
         bounds_error=False,
         z_tpll=z_tpll,
-        n_jobs=-1
+        n_jobs=-1,
+        lat_center=geometry['center_latitude'],
+        lon_center=geometry['center_longitude'],
     )
     
     # Add to regridded variables with special name

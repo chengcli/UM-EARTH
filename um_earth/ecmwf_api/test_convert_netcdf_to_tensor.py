@@ -11,6 +11,7 @@ import tempfile
 import shutil
 import numpy as np
 from pathlib import Path
+import yaml
 
 try:
     from netCDF4 import Dataset
@@ -165,6 +166,44 @@ def create_test_netcdf_block(
         nc.nghost = 3
         nc.block_index_x2 = 0
         nc.block_index_x3 = 0
+
+
+def create_test_config(filename: str, nx2: int, nx3: int, nghost: int = 3) -> None:
+    config = {
+        "geometry": {
+            "type": "cartesian",
+            "bounds": {
+                "x1min": 0.0,
+                "x1max": 15000.0,
+                "x2min": 0.0,
+                "x2max": 28000.0,
+                "x3min": 0.0,
+                "x3max": 28000.0,
+            },
+            "cells": {
+                "nx1": 10,
+                "nx2": nx2,
+                "nx3": nx3,
+                "nghost": nghost,
+            },
+            "center_latitude": 0.0,
+            "center_longitude": 0.0,
+        }
+    }
+    with open(filename, "w", encoding="utf-8") as stream:
+        yaml.safe_dump(config, stream)
+
+
+def create_test_topography(filename: str, topo_x3x2: np.ndarray) -> None:
+    tensors = {
+        "topography": torch.tensor(topo_x3x2.astype(np.float32)),
+        "lat": torch.linspace(0.0, 1.0, topo_x3x2.shape[0], dtype=torch.float32),
+        "lon": torch.linspace(0.0, 1.0, topo_x3x2.shape[1], dtype=torch.float32),
+        "lat_bounds": torch.tensor([0.0, 1.0], dtype=torch.float32),
+        "lon_bounds": torch.tensor([0.0, 1.0], dtype=torch.float32),
+        "row0_is_north": torch.tensor([0], dtype=torch.int8),
+    }
+    save_tensors(tensors, filename)
 
 
 @unittest.skipIf(not TORCH_AVAILABLE, "PyTorch not available")
@@ -504,6 +543,42 @@ class TestConvertNetCDFToTensor(unittest.TestCase):
         
         # Should have correct shape
         self.assertEqual(hydro_w.shape, (2, 8, 10, 10, 10))
+
+    def test_zero_velocity_below_topography(self):
+        """Test that u/v/w are zeroed below the low-resolution topography."""
+        input_file = os.path.join(self.temp_dir, 'test_block.nc')
+        config_file = os.path.join(self.temp_dir, 'test.yaml')
+        topo_file = os.path.join(self.temp_dir, 'pte1b_topo_2p4km.pt')
+        create_test_netcdf_block(input_file, n_time=1, n_x1=10, n_x2=10, n_x3=10)
+        create_test_config(config_file, nx2=4, nx3=4, nghost=3)
+
+        topo_x3x2 = np.zeros((4, 4), dtype=np.float32)
+        topo_x3x2[0, 0] = 5000.0
+        create_test_topography(topo_file, topo_x3x2)
+
+        with Dataset(input_file, 'a') as nc:
+            x2f = np.linspace(0.0, 28000.0, 11)
+            x3f = np.linspace(0.0, 28000.0, 11)
+            nc.variables['x2'][:] = 0.5 * (x2f[:-1] + x2f[1:])
+            nc.variables['x3'][:] = 0.5 * (x3f[:-1] + x3f[1:])
+            for name, value in (('u', 4.0), ('v', 3.0), ('w', 2.0), ('rho', 1.0)):
+                nc.variables[name][:] = value
+
+        output_file = convert_netcdf_to_tensor(
+            input_file,
+            topo_file=topo_file,
+            config_file=config_file,
+        )
+
+        loaded = torch.jit.load(output_file)
+        hydro_w = loaded.hydro_w.numpy()
+
+        # (time, nvar, x3, x2, x1). Lower x1 levels in the southwest corner should be zeroed.
+        self.assertTrue(np.allclose(hydro_w[0, 1, 0, 0, :3], 0.0))  # w
+        self.assertTrue(np.allclose(hydro_w[0, 2, 0, 0, :3], 0.0))  # u
+        self.assertTrue(np.allclose(hydro_w[0, 3, 0, 0, :3], 0.0))  # v
+        self.assertAlmostEqual(float(hydro_w[0, 0, 0, 0, 0]), 1.0, places=6)  # rho unchanged
+        self.assertAlmostEqual(float(hydro_w[0, 2, 9, 9, 0]), 4.0, places=6)  # u away from terrain unchanged
     
     def test_file_not_found(self):
         """Test that FileNotFoundError is raised for non-existent files."""

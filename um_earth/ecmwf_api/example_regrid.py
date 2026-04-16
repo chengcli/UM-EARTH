@@ -2,14 +2,15 @@
 Example: Regridding ECMWF ERA5 data from pressure-lat-lon to distance grids
 
 This example demonstrates how to use the regridding functions to convert
-ECMWF ERA5 data from pressure-lat-lon grids to distance grids (height-Y-X).
+ECMWF ERA5 data from pressure-lat-lon grids to distance grids stored as
+``(time, height, west-east, south-north)``.
 
 The pipeline:
 1. Compute layer thickness from pressure levels and density
 2. Add layer thickness to topographic elevation to get absolute heights
 3. Interpolate variables vertically to uniform height grid
-4. Convert lat/lon to local Cartesian coordinates (Y, X)
-5. Interpolate horizontally to desired output grid
+4. Convert lat/lon to local south-north / west-east distance coordinates
+5. Interpolate horizontally and store results as `(Z, X, Y)`
 """
 
 import numpy as np
@@ -152,7 +153,7 @@ def main():
     # Step 5: Regrid topography
     print("\n4. Regridding topography...")
     
-    topo_yx = regrid_topography(
+    topo_xy = regrid_topography(
         topo_ll,
         lats,
         lons,
@@ -162,15 +163,15 @@ def main():
         bounds_error=False
     )
     
-    print(f"   Output shape: {topo_yx.shape}")
-    print(f"   Output topography range: [{np.nanmin(topo_yx):.2f}, {np.nanmax(topo_yx):.2f}] m")
+    print(f"   Output shape: {topo_xy.shape}")
+    print(f"   Output topography range: [{np.nanmin(topo_xy):.2f}, {np.nanmax(topo_xy):.2f}] m")
     
     # Step 6: Regrid temperature using pre-computed heights with parallelization
     print("\n5. Regridding temperature field (using pre-computed heights and parallel processing)...")
     print("   Using automatic parallelization (n_jobs=None) for optimal performance...")
     
     try:
-        temp_tzyx = regrid_pressure_to_height(
+        temp_tzxy = regrid_pressure_to_height(
             temp_tpll,
             rho_tpll,
             topo_ll,
@@ -187,9 +188,9 @@ def main():
             n_jobs=None  # Auto-parallelization: uses multiple CPUs for large datasets
         )
         
-        print(f"   Output shape: {temp_tzyx.shape}")
-        print(f"   Output temperature range: [{np.nanmin(temp_tzyx):.2f}, {np.nanmax(temp_tzyx):.2f}] K")
-        print(f"   Valid data fraction: {np.sum(~np.isnan(temp_tzyx)) / temp_tzyx.size:.1%}")
+        print(f"   Output shape: {temp_tzxy.shape}")
+        print(f"   Output temperature range: [{np.nanmin(temp_tzxy):.2f}, {np.nanmax(temp_tzxy):.2f}] K")
+        print(f"   Valid data fraction: {np.sum(~np.isnan(temp_tzxy)) / temp_tzxy.size:.1%}")
         
     except ValueError as e:
         print(f"   Error during regridding: {e}")
@@ -198,7 +199,7 @@ def main():
     # Step 7: Regrid density using same pre-computed heights (efficient!)
     print("\n6. Regridding density field (using pre-computed heights and parallel processing)...")
     
-    rho_tzyx = regrid_pressure_to_height(
+    rho_tzxy = regrid_pressure_to_height(
         rho_tpll,
         rho_tpll,  # Using density itself for the computation
         topo_ll,
@@ -215,8 +216,8 @@ def main():
         n_jobs=None  # Auto-parallelization
     )
     
-    print(f"   Output shape: {rho_tzyx.shape}")
-    print(f"   Output density range: [{np.nanmin(rho_tzyx):.3f}, {np.nanmax(rho_tzyx):.3f}] kg/m^3")
+    print(f"   Output shape: {rho_tzxy.shape}")
+    print(f"   Output density range: [{np.nanmin(rho_tzxy):.3f}, {np.nanmax(rho_tzxy):.3f}] kg/m^3")
     print(f"\n   Note: Heights computed once, reused for both variables, and processed in parallel!")
     
     # Alternative: Step 6b - Regrid multiple variables in one call (even more efficient!)
@@ -253,16 +254,16 @@ def main():
     print(f"   Note: This approach is ideal when regridding many variables!")
     
     # Use results from multi-variable function for saving
-    temp_tzyx = results['temperature']
-    rho_tzyx = results['density']
+    temp_tzxy = results['temperature']
+    rho_tzxy = results['density']
     
     # Step 8: Save to NetCDF files
     print("\n7. Saving regridded data to NetCDF files...")
     
     # Prepare variables dictionary
     variables = {
-        'temperature': temp_tzyx,
-        'density': rho_tzyx,
+        'temperature': temp_tzxy,
+        'density': rho_tzxy,
     }
     
     # Prepare coordinates dictionary
@@ -312,7 +313,7 @@ def main():
         # Save topography
         save_topography_to_netcdf(
             'regridded_topography.nc',
-            topo_yx,
+            topo_xy,
             x2f,
             x3f,
             metadata={'source': 'Regridded from original topography'},

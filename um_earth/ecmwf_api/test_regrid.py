@@ -15,7 +15,7 @@ from regrid import (
     compute_height_grid,
     latlon_to_xy,
     vertical_interp_to_z,
-    horizontal_regrid_xy,
+    horizontal_regrid_yx,
     regrid_pressure_to_height,
     regrid_multiple_variables,
     regrid_topography,
@@ -222,8 +222,8 @@ class TestVerticalInterpToZ(unittest.TestCase):
         self.assertEqual(result.shape, (1, 1, 2))
 
 
-class TestHorizontalRegridXy(unittest.TestCase):
-    """Test cases for horizontal_regrid_xy function."""
+class TestHorizontalRegridYx(unittest.TestCase):
+    """Test cases for horizontal_regrid_yx function."""
     
     def test_basic_regridding(self):
         """Test basic horizontal regridding."""
@@ -232,15 +232,15 @@ class TestHorizontalRegridXy(unittest.TestCase):
         y = np.array([0., 1., 2.])
         field = np.array([[0., 1., 2.],
                          [1., 2., 3.],
-                         [2., 3., 4.]])  # (X, Y)
+                         [2., 3., 4.]])  # (Y, X)
         
         x_out = np.array([0.5, 1.5])
         y_out = np.array([0.5, 1.5])
         
-        result = horizontal_regrid_xy(x, y, field, x_out, y_out, bounds_error=False)
+        result = horizontal_regrid_yx(y, x, field, y_out, x_out, bounds_error=False)
         
         # Check shape
-        self.assertEqual(result.shape, (len(x_out), len(y_out)))
+        self.assertEqual(result.shape, (len(y_out), len(x_out)))
         
     def test_extrapolation_detection_x(self):
         """Test that X extrapolation raises error when bounds_error=True."""
@@ -252,7 +252,7 @@ class TestHorizontalRegridXy(unittest.TestCase):
         y_out = np.array([0.5, 1.5])
         
         with self.assertRaises(ValueError) as context:
-            horizontal_regrid_xy(x, y, field, x_out, y_out, bounds_error=True)
+            horizontal_regrid_yx(y, x, field, y_out, x_out, bounds_error=True)
         
         self.assertIn("extrapolation", str(context.exception).lower())
         
@@ -266,7 +266,7 @@ class TestHorizontalRegridXy(unittest.TestCase):
         y_out = np.array([-1., 1., 3.])  # -1 and 3 are outside
         
         with self.assertRaises(ValueError) as context:
-            horizontal_regrid_xy(x, y, field, x_out, y_out, bounds_error=True)
+            horizontal_regrid_yx(y, x, field, y_out, x_out, bounds_error=True)
         
         self.assertIn("extrapolation", str(context.exception).lower())
 
@@ -290,8 +290,8 @@ class TestRegridPressureToHeight(unittest.TestCase):
         
         # Output grids (smaller domain)
         x1f = np.linspace(0., 5000., 20)  # Height
-        x2f = np.linspace(-1000., 1000., 10)  # Y
-        x3f = np.linspace(-2000., 2000., 15)  # X
+        x2f = np.linspace(-2000., 2000., 15)  # X
+        x3f = np.linspace(-1000., 1000., 10)  # Y
         
         planet_grav = 9.81
         planet_radius = 6371.e3
@@ -307,6 +307,93 @@ class TestRegridPressureToHeight(unittest.TestCase):
         
         # Check output shape
         self.assertEqual(result.shape, (T, len(x1f), len(x2f), len(x3f)))
+
+    def test_horizontal_axes_follow_x2_x3_convention(self):
+        """Test that x2 is east-west/X and x3 is north-south/Y in regridded output."""
+        T, P, Lat, Lon = 1, 2, 5, 6
+        plev = np.array([100000.0, 80000.0])
+        lats = np.linspace(30.0, 32.0, Lat)
+        lons = np.linspace(-110.0, -107.0, Lon)
+        planet_grav = 9.81
+        planet_radius = 6371.0e3
+
+        y_coord, x_coord = latlon_to_xy(lats, lons, planet_radius)
+        field_ll = y_coord[:, None] + 10.0 * x_coord[None, :]
+        var_tpll = np.stack([field_ll, field_ll], axis=0)[None, ...]
+        rho_tpll = np.ones((T, P, Lat, Lon))
+        topo_ll = np.zeros((Lat, Lon))
+        z_tpll = np.zeros((T, P, Lat, Lon))
+        z_tpll[:, 1, :, :] = 1000.0
+
+        x1f = np.array([100.0])
+        x2f = np.linspace(x_coord[1], x_coord[-2], 4)
+        x3f = np.linspace(y_coord[1], y_coord[-2], 3)
+
+        result = regrid_pressure_to_height(
+            var_tpll,
+            rho_tpll,
+            topo_ll,
+            plev,
+            lats,
+            lons,
+            x1f,
+            x2f,
+            x3f,
+            planet_grav,
+            planet_radius,
+            bounds_error=True,
+            z_tpll=z_tpll,
+            n_jobs=1,
+        )
+
+        expected = x2f[:, None] * 10.0 + x3f[None, :]
+        self.assertEqual(result.shape, (1, 1, len(x2f), len(x3f)))
+        np.testing.assert_allclose(result[0, 0], expected, rtol=1e-6, atol=1e-6)
+
+    def test_regridding_respects_explicit_projection_center(self):
+        """Test that explicit lat/lon projection centers control the sampled source region."""
+        T, P, Lat, Lon = 1, 2, 9, 11
+        plev = np.array([100000.0, 80000.0])
+        lats = np.linspace(-4.0, 4.0, Lat)
+        lons = np.linspace(-10.0, 10.0, Lon)
+        planet_grav = 9.81
+        planet_radius = 6371.0e3
+        lat_center = 2.0
+        lon_center = 6.0
+
+        y_coord, x_coord = latlon_to_xy(lats, lons, planet_radius, lat_center, lon_center)
+        field_ll = y_coord[:, None] + 10.0 * x_coord[None, :]
+        var_tpll = np.stack([field_ll, field_ll], axis=0)[None, ...]
+        rho_tpll = np.ones((T, P, Lat, Lon))
+        topo_ll = np.zeros((Lat, Lon))
+        z_tpll = np.zeros((T, P, Lat, Lon))
+        z_tpll[:, 1, :, :] = 1000.0
+
+        x1f = np.array([100.0])
+        x2f = np.linspace(-50000.0, 50000.0, 4)
+        x3f = np.linspace(-30000.0, 30000.0, 3)
+
+        result = regrid_pressure_to_height(
+            var_tpll,
+            rho_tpll,
+            topo_ll,
+            plev,
+            lats,
+            lons,
+            x1f,
+            x2f,
+            x3f,
+            planet_grav,
+            planet_radius,
+            bounds_error=True,
+            z_tpll=z_tpll,
+            n_jobs=1,
+            lat_center=lat_center,
+            lon_center=lon_center,
+        )
+
+        expected = x2f[:, None] * 10.0 + x3f[None, :]
+        np.testing.assert_allclose(result[0, 0], expected, rtol=1e-6, atol=1e-6)
     
     def test_with_precomputed_heights(self):
         """Test regridding with pre-computed heights for efficiency."""
@@ -325,8 +412,8 @@ class TestRegridPressureToHeight(unittest.TestCase):
         
         # Output grids
         x1f = np.linspace(0., 5000., 20)
-        x2f = np.linspace(-1000., 1000., 10)
-        x3f = np.linspace(-2000., 2000., 15)
+        x2f = np.linspace(-2000., 2000., 15)
+        x3f = np.linspace(-1000., 1000., 10)
         
         planet_grav = 9.81
         planet_radius = 6371.e3
@@ -381,8 +468,8 @@ class TestRegridPressureToHeight(unittest.TestCase):
         
         # Output grids that exceed input domain
         x1f = np.linspace(0., 5000., 10)
-        x2f = np.linspace(-500000., 500000., 10)  # Way too large
-        x3f = np.linspace(-500000., 500000., 10)  # Way too large
+        x2f = np.linspace(-500000., 500000., 10)  # Way too large in X
+        x3f = np.linspace(-500000., 500000., 10)  # Way too large in Y
         
         planet_grav = 9.81
         planet_radius = 6371.e3
@@ -409,8 +496,8 @@ class TestRegridTopography(unittest.TestCase):
         lons = np.linspace(-110.0, -105.0, Lon)
         topo_ll = np.random.randn(Lat, Lon) * 100.0
         
-        x2f = np.linspace(-1000., 1000., 8)
-        x3f = np.linspace(-2000., 2000., 10)
+        x2f = np.linspace(-2000., 2000., 10)
+        x3f = np.linspace(-1000., 1000., 8)
         planet_radius = 6371.e3
         
         result = regrid_topography(
@@ -421,6 +508,22 @@ class TestRegridTopography(unittest.TestCase):
         
         # Check output shape
         self.assertEqual(result.shape, (len(x2f), len(x3f)))
+
+    def test_topography_axes_follow_x2_x3_convention(self):
+        """Test that regridded topography is returned in (x2=X, x3=Y) order."""
+        Lat, Lon = 5, 6
+        lats = np.linspace(30.0, 32.0, Lat)
+        lons = np.linspace(-110.0, -107.0, Lon)
+        planet_radius = 6371.e3
+        y_coord, x_coord = latlon_to_xy(lats, lons, planet_radius)
+
+        topo_ll = y_coord[:, None] + 10.0 * x_coord[None, :]
+        x2f = np.linspace(x_coord[1], x_coord[-2], 4)
+        x3f = np.linspace(y_coord[1], y_coord[-2], 3)
+
+        topo_xy = regrid_topography(topo_ll, lats, lons, x2f, x3f, planet_radius, bounds_error=True)
+        expected = x2f[:, None] * 10.0 + x3f[None, :]
+        np.testing.assert_allclose(topo_xy, expected, rtol=1e-6, atol=1e-6)
 
 
 class TestMultipleVariables(unittest.TestCase):
@@ -450,8 +553,8 @@ class TestMultipleVariables(unittest.TestCase):
         topo_ll = np.random.randn(Lat, Lon) * 50.0
         
         x1f = np.linspace(0., 5000., 10)
-        x2f = np.linspace(-1000., 1000., 6)
-        x3f = np.linspace(-2000., 2000., 8)
+        x2f = np.linspace(-2000., 2000., 8)
+        x3f = np.linspace(-1000., 1000., 6)
         
         planet_grav = 9.81
         planet_radius = 6371.e3
@@ -498,8 +601,8 @@ class TestMultipleVariables(unittest.TestCase):
         topo_ll = np.random.randn(Lat, Lon) * 50.0
         
         x1f = np.linspace(0., 5000., 8)
-        x2f = np.linspace(-1000., 1000., 5)
-        x3f = np.linspace(-2000., 2000., 6)
+        x2f = np.linspace(-2000., 2000., 6)
+        x3f = np.linspace(-1000., 1000., 5)
         
         planet_grav = 9.81
         planet_radius = 6371.e3
@@ -552,8 +655,8 @@ class TestMultipleVariables(unittest.TestCase):
         topo_ll = np.random.randn(Lat, Lon) * 50.0
         
         x1f = np.linspace(0., 5000., 8)
-        x2f = np.linspace(-1000., 1000., 5)
-        x3f = np.linspace(-2000., 2000., 6)
+        x2f = np.linspace(-2000., 2000., 6)
+        x3f = np.linspace(-1000., 1000., 5)
         
         planet_grav = 9.81
         planet_radius = 6371.e3
@@ -618,8 +721,8 @@ class TestParallelProcessing(unittest.TestCase):
         topo_ll = np.random.randn(Lat, Lon) * 50.0
         
         x1f = np.linspace(0., 5000., 10)
-        x2f = np.linspace(-1000., 1000., 6)
-        x3f = np.linspace(-2000., 2000., 8)
+        x2f = np.linspace(-2000., 2000., 8)
+        x3f = np.linspace(-1000., 1000., 6)
         
         planet_grav = 9.81
         planet_radius = 6371.e3
@@ -696,9 +799,9 @@ class TestSaveToNetCDF(unittest.TestCase):
     def test_save_regridded_data_basic(self):
         """Test basic save of regridded atmospheric data."""
         # Create test data
-        T, Z, Y, X = 3, 5, 4, 6
-        temp_data = 280.0 + np.random.randn(T, Z, Y, X) * 10.0
-        rho_data = 1.0 + np.random.randn(T, Z, Y, X) * 0.1
+        T, Z, X, Y = 3, 5, 6, 4
+        temp_data = 280.0 + np.random.randn(T, Z, X, Y) * 10.0
+        rho_data = 1.0 + np.random.randn(T, Z, X, Y) * 0.1
         
         variables = {
             'temperature': temp_data,
@@ -708,8 +811,8 @@ class TestSaveToNetCDF(unittest.TestCase):
         coordinates = {
             'time': np.arange(T, dtype=float),
             'x1f': np.linspace(0., 5000., Z),
-            'x2f': np.linspace(-1000., 1000., Y),
-            'x3f': np.linspace(-2000., 2000., X),
+            'x2f': np.linspace(-2000., 2000., X),
+            'x3f': np.linspace(-1000., 1000., Y),
         }
         
         metadata = {
@@ -735,8 +838,8 @@ class TestSaveToNetCDF(unittest.TestCase):
                 # Check dimensions
                 self.assertEqual(len(ncfile.dimensions['time']), T)
                 self.assertEqual(len(ncfile.dimensions['x1']), Z)
-                self.assertEqual(len(ncfile.dimensions['x2']), Y)
-                self.assertEqual(len(ncfile.dimensions['x3']), X)
+                self.assertEqual(len(ncfile.dimensions['x2']), X)
+                self.assertEqual(len(ncfile.dimensions['x3']), Y)
                 
                 # Check variables exist
                 self.assertIn('temperature', ncfile.variables)
@@ -762,10 +865,10 @@ class TestSaveToNetCDF(unittest.TestCase):
     
     def test_save_topography_basic(self):
         """Test basic save of topography data."""
-        Y, X = 10, 15
-        topo_data = 1000.0 + np.random.randn(Y, X) * 100.0
-        x2f = np.linspace(-5000., 5000., Y)
-        x3f = np.linspace(-7500., 7500., X)
+        X, Y = 15, 10
+        topo_data = 1000.0 + np.random.randn(X, Y) * 100.0
+        x2f = np.linspace(-7500., 7500., X)
+        x3f = np.linspace(-5000., 5000., Y)
         
         metadata = {
             'source': 'Test topography',
@@ -785,8 +888,8 @@ class TestSaveToNetCDF(unittest.TestCase):
             from netCDF4 import Dataset
             with Dataset(filename, 'r') as ncfile:
                 # Check dimensions
-                self.assertEqual(len(ncfile.dimensions['x2']), Y)
-                self.assertEqual(len(ncfile.dimensions['x3']), X)
+                self.assertEqual(len(ncfile.dimensions['x2']), X)
+                self.assertEqual(len(ncfile.dimensions['x3']), Y)
                 
                 # Check variables
                 self.assertIn('topography', ncfile.variables)
@@ -800,13 +903,13 @@ class TestSaveToNetCDF(unittest.TestCase):
     
     def test_save_with_processing_history(self):
         """Test save with custom processing history."""
-        T, Z, Y, X = 2, 3, 4, 5
-        variables = {'temperature': np.ones((T, Z, Y, X)) * 280.0}
+        T, Z, X, Y = 2, 3, 5, 4
+        variables = {'temperature': np.ones((T, Z, X, Y)) * 280.0}
         coordinates = {
             'time': np.arange(T, dtype=float),
             'x1f': np.linspace(0., 1000., Z),
-            'x2f': np.linspace(-500., 500., Y),
-            'x3f': np.linspace(-750., 750., X),
+            'x2f': np.linspace(-750., 750., X),
+            'x3f': np.linspace(-500., 500., Y),
         }
         
         processing_history = "2024-01-01: Regridded from ERA5 data using custom pipeline"
@@ -838,7 +941,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestComputeHeightGrid))
     suite.addTests(loader.loadTestsFromTestCase(TestLatlonToXy))
     suite.addTests(loader.loadTestsFromTestCase(TestVerticalInterpToZ))
-    suite.addTests(loader.loadTestsFromTestCase(TestHorizontalRegridXy))
+    suite.addTests(loader.loadTestsFromTestCase(TestHorizontalRegridYx))
     suite.addTests(loader.loadTestsFromTestCase(TestRegridPressureToHeight))
     suite.addTests(loader.loadTestsFromTestCase(TestRegridTopography))
     suite.addTests(loader.loadTestsFromTestCase(TestMultipleVariables))

@@ -44,6 +44,9 @@ from typing import Dict, Optional
 from pathlib import Path
 import re
 
+import yaml
+from scipy.interpolate import RegularGridInterpolator
+
 try:
     import torch
 except ImportError:
@@ -102,7 +105,116 @@ def bundle_restart_parts(part_files: list[str], restart_file: str) -> str:
     return str(restart_path)
 
 
-def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None) -> str:
+def load_topography_buffers(topo_file: str) -> dict[str, torch.Tensor]:
+    module = torch.jit.load(str(topo_file))
+    data: dict[str, torch.Tensor] = {}
+    for name, buf in module.named_buffers(recurse=True):
+        data[name] = buf.detach().cpu()
+    for name, param in module.named_parameters(recurse=True):
+        data[name] = param.detach().cpu()
+    return data
+
+
+def orient_topography_array(topo_data: dict[str, torch.Tensor]) -> np.ndarray:
+    topo = topo_data["topography"].detach().cpu().numpy().astype(np.float64)
+    row0_is_north = topo_data.get("row0_is_north")
+    if row0_is_north is not None and bool(row0_is_north.item()):
+        topo = np.flip(topo, axis=0)
+    return topo
+
+
+def load_geometry_from_config(config_file: str) -> dict:
+    with open(config_file, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    geometry = config["geometry"]
+    bounds = geometry["bounds"]
+    cells = geometry["cells"]
+    return {
+        "bounds": {
+            "x2min": float(bounds["x2min"]),
+            "x2max": float(bounds["x2max"]),
+            "x3min": float(bounds["x3min"]),
+            "x3max": float(bounds["x3max"]),
+        },
+        "cells": {
+            "nx2": int(cells["nx2"]),
+            "nx3": int(cells["nx3"]),
+            "nghost": int(cells["nghost"]),
+        },
+    }
+
+
+def compute_interior_horizontal_centers(geometry: dict) -> tuple[np.ndarray, np.ndarray]:
+    bounds = geometry["bounds"]
+    cells = geometry["cells"]
+    nghost = cells["nghost"]
+    nx2_total = cells["nx2"] + 2 * nghost
+    nx3_total = cells["nx3"] + 2 * nghost
+
+    x2f = np.linspace(bounds["x2min"], bounds["x2max"], nx2_total + 1, dtype=np.float64)
+    x3f = np.linspace(bounds["x3min"], bounds["x3max"], nx3_total + 1, dtype=np.float64)
+    x2 = 0.5 * (x2f[:-1] + x2f[1:])
+    x3 = 0.5 * (x3f[:-1] + x3f[1:])
+    return x2[nghost:-nghost], x3[nghost:-nghost]
+
+
+def topography_on_block_grid(
+    topo_file: str,
+    config_file: str,
+    x2_block: np.ndarray,
+    x3_block: np.ndarray,
+) -> np.ndarray:
+    topo_data = load_topography_buffers(topo_file)
+    topo_x3x2 = orient_topography_array(topo_data)
+    x2_global, x3_global = compute_interior_horizontal_centers(load_geometry_from_config(config_file))
+
+    if topo_x3x2.shape != (len(x3_global), len(x2_global)):
+        raise ValueError(
+            f"Topography shape {topo_x3x2.shape} does not match config-derived "
+            f"(x3, x2)=({len(x3_global)}, {len(x2_global)})"
+        )
+
+    interp = RegularGridInterpolator(
+        (x3_global, x2_global),
+        topo_x3x2,
+        method="linear",
+        bounds_error=False,
+        fill_value=None,
+    )
+    x2_query = np.clip(np.asarray(x2_block, dtype=np.float64), x2_global[0], x2_global[-1])
+    x3_query = np.clip(np.asarray(x3_block, dtype=np.float64), x3_global[0], x3_global[-1])
+    x3_mesh, x2_mesh = np.meshgrid(x3_query, x2_query, indexing="ij")
+    return interp(np.stack([x3_mesh.ravel(), x2_mesh.ravel()], axis=-1)).reshape(len(x3_query), len(x2_query))
+
+
+def zero_velocity_below_topography(
+    variables: Dict[str, np.ndarray],
+    x1: np.ndarray,
+    x2: np.ndarray,
+    x3: np.ndarray,
+    *,
+    topo_file: str,
+    config_file: str,
+) -> int:
+    topo_x3x2 = topography_on_block_grid(topo_file, config_file, x2, x3)
+    topo_x2x3 = topo_x3x2.T
+    below_topo = np.asarray(x1, dtype=np.float64)[:, np.newaxis, np.newaxis] < topo_x2x3[np.newaxis, :, :]
+    zeroed = int(np.count_nonzero(below_topo))
+    if zeroed == 0:
+        return 0
+
+    for name in ("w", "u", "v"):
+        variables[name] = np.where(below_topo[np.newaxis, ...], 0.0, variables[name])
+    return zeroed
+
+
+def convert_netcdf_to_tensor(
+    input_file: str,
+    output_file: Optional[str] = None,
+    *,
+    topo_file: Optional[str] = None,
+    config_file: Optional[str] = None,
+) -> str:
     """
     Convert a single NetCDF block file to PyTorch tensor file.
     
@@ -141,6 +253,9 @@ def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None)
         # Required variables (on cell centers with dimensions: time, x1, x2, x3)
         required_vars = ['rho', 'w', 'v', 'u', 'q']
         cloud_vars = ['ciwc', 'clwc', 'cswc', 'crwc']
+        x1_values = np.asarray(nc.variables["x1"][:], dtype=np.float64)
+        x2_values = np.asarray(nc.variables["x2"][:], dtype=np.float64)
+        x3_values = np.asarray(nc.variables["x3"][:], dtype=np.float64)
         
         # Check for pressure variable - could be 'p', 'pressure', or 'pressure_level'
         pressure_var = None
@@ -215,6 +330,19 @@ def convert_netcdf_to_tensor(input_file: str, output_file: Optional[str] = None)
             else:
                 variables[var_name] = np.zeros((n_time, n_x1, n_x2, n_x3), dtype=np.float32)
                 print(f"  Using zeros for missing {var_name}")
+
+    if topo_file is not None or config_file is not None:
+        if topo_file is None or config_file is None:
+            raise ValueError("Both topo_file and config_file are required when zeroing velocities below topography")
+        zeroed = zero_velocity_below_topography(
+            variables,
+            x1_values,
+            x2_values,
+            x3_values,
+            topo_file=topo_file,
+            config_file=config_file,
+        )
+        print(f"  Zeroed u/v/w below topography in {zeroed} cell centers per time slice")
     
     # Step 1: Combine cloud variables
     # q2 = ciwc + clwc (cloud ice + cloud liquid water)
@@ -274,6 +402,8 @@ def convert_directory(
     n_blocks_x2: int = 1,
     n_blocks_x3: int = 1,
     bundle_restart: Optional[str] = None,
+    topo_file: Optional[str] = None,
+    config_file: Optional[str] = None,
 ) -> list:
     """
     Convert all NetCDF files in a directory to PyTorch tensors.
@@ -324,7 +454,12 @@ def convert_directory(
             output_file = output_path / f"{base_name}.part"
         
         try:
-            convert_netcdf_to_tensor(str(nc_file), str(output_file))
+            convert_netcdf_to_tensor(
+                str(nc_file),
+                str(output_file),
+                topo_file=topo_file,
+                config_file=config_file,
+            )
             output_files.append(str(output_file))
         except Exception as e:
             print(f"Error converting {nc_file}: {e}")
@@ -393,6 +528,14 @@ Examples:
         '--bundle-restart',
         help='Optional output restart tarball bundling all generated .part files'
     )
+    parser.add_argument(
+        '--topography-file',
+        help='Optional low-resolution topography tensor (.pt). When provided with --config-file, zeroes u/v/w below terrain before writing hydro_w.'
+    )
+    parser.add_argument(
+        '--config-file',
+        help='FRIGATE YAML config used to reconstruct the low-resolution x2/x3 grid for topography masking.'
+    )
     
     args = parser.parse_args()
     
@@ -410,7 +553,12 @@ Examples:
         
         output_file = args.output
         try:
-            convert_netcdf_to_tensor(str(input_path), output_file)
+            convert_netcdf_to_tensor(
+                str(input_path),
+                output_file,
+                topo_file=args.topography_file,
+                config_file=args.config_file,
+            )
         except Exception as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -427,6 +575,8 @@ Examples:
                 n_blocks_x2=args.n_blocks_x2,
                 n_blocks_x3=args.n_blocks_x3,
                 bundle_restart=args.bundle_restart,
+                topo_file=args.topography_file,
+                config_file=args.config_file,
             )
             if not output_files:
                 sys.exit(1)
