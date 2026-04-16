@@ -113,18 +113,6 @@ def test_implicit_scheme_for_refinement_factor():
     assert module.implicit_scheme_for_refinement_factor(8.0) == 1
 
 
-def test_refinement_overrides_for_18h_event():
-    module = load_module()
-
-    assert module.refinement_overrides_for_event(1, False) == {}
-    assert module.refinement_overrides_for_event(2, True) == {}
-    assert module.refinement_overrides_for_event(3, False) == {}
-    assert module.refinement_overrides_for_event(3, True) == {
-        "cfl": 0.3,
-        "implicit_scheme": 0,
-    }
-
-
 def test_refined_global_horizontal_cells_uses_layout_counts():
     module = load_module()
 
@@ -525,7 +513,7 @@ def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
         ("refine", "0p6km", {}),
         ("ghost", (2, 20, 20, 3)),
         ("run", 43200.0, 21600.0),
-        ("refine", "0p3km", {"cfl": 0.3, "implicit_scheme": 0}),
+        ("refine", "0p3km", {}),
         ("ghost", (2, 36, 36, 3)),
     ]
 

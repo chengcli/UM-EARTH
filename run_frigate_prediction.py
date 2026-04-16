@@ -49,12 +49,6 @@ def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
     return 1
 
 
-def refinement_overrides_for_event(index: int, refine_at_18h: bool) -> dict[str, float | int]:
-    if index == 3 and refine_at_18h:
-        return {"cfl": 0.3, "implicit_scheme": 0}
-    return {}
-
-
 def refined_global_horizontal_cells(
     current_local_nx2: int,
     current_local_nx3: int,
@@ -765,13 +759,11 @@ def run_staged_ghost_schedule(
         block_vars = mesh_vars[0]
 
         if should_refine:
-            refinement_overrides = refinement_overrides_for_event(index, refine_at_18h)
             mesh, thermo_x, kinet, block_vars = refine_simulation(
                 mesh,
                 block_vars,
                 topo_vars,
                 config_file,
-                **refinement_overrides,
             )
 
         nghost = mesh.blocks[0].options.coord().nghost()
