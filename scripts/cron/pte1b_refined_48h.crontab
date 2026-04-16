@@ -1,0 +1,2 @@
+CRON_TZ=America/Detroit
+0 18 * * * /home/chengcli/data/2025.FRIGATE/run_daily_pte1b_refined_48h.sh >> /home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log 2>&1

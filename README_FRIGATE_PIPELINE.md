@@ -300,6 +300,48 @@ tmux attach -t pte1b_20260413_refined_2gpu
 tail -n 80 /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_refined_ghost_24h_2gpu/run.log
 ```
 
+## Daily Automation
+
+A daily refined `pte1b` run for a 48-hour forecast window is installed via
+`crontab` and launches at `6:00 PM` Eastern Time every day.
+
+Installed files:
+
+* launcher: `/home/chengcli/data/2025.FRIGATE/run_daily_pte1b_refined_48h.sh`
+* crontab file: `/home/chengcli/data/2025.FRIGATE/cron/pte1b_refined_48h.crontab`
+* cron log: `/home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log`
+
+Active crontab entry:
+
+```cron
+CRON_TZ=America/Detroit
+0 18 * * * /home/chengcli/data/2025.FRIGATE/run_daily_pte1b_refined_48h.sh >> /home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log 2>&1
+```
+
+Behavior:
+
+* target date defaults to the current ET calendar day
+* source forecast directory is `/home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data/YYYYMMDD`
+* run directory is `/home/chengcli/data/2025.FRIGATE/runs/pte1b-YYYY-MM-DD`
+* preparation uses forecast mode with `--nY 2 --nX 1`
+* runtime uses two GPUs with `torchrun --nproc-per-node=2`
+* runtime mode is `--refinement-mode staged --forcing-mode ghost`
+* staged refinement occurs at `06h` and `12h`, with a ghost-only update at `18h`
+* `--prediction-duration 108000` is used so the total forecast span is 48 hours
+
+Manual test example:
+
+```bash
+/home/chengcli/data/2025.FRIGATE/run_daily_pte1b_refined_48h.sh 20260414
+```
+
+Install or refresh the cron job with:
+
+```bash
+crontab /home/chengcli/data/2025.FRIGATE/cron/pte1b_refined_48h.crontab
+crontab -l
+```
+
 ## Notes
 
 ### One-GPU Versus Two-GPU Inputs
