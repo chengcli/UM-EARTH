@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -305,7 +306,7 @@ def test_run_simulation_resynchronizes_hydro_w_after_state_updates():
     original_evolve = module.evolve_kinetics
     try:
         module.add_frigate_forcing = (
-            lambda block_vars, eos, precip_indices, dt: block_vars["hydro_u"].add_(3.0)
+            lambda block_vars, eos, precip_indices, dt, **kwargs: block_vars["hydro_u"].add_(3.0)
         )
         module.evolve_kinetics = (
             lambda hydro_w, eos, thermo_x, thermo_y, kinet, dt: torch.ones_like(hydro_w[module.kICY:])
@@ -327,6 +328,51 @@ def test_run_simulation_resynchronizes_hydro_w_after_state_updates():
     expected_hydro_w[..., 0] += 1.0
     assert torch.equal(hydro_w_out, expected_hydro_w)
     assert torch.equal(mesh_vars[0]["hydro_w"], expected_hydro_w)
+
+
+def test_apply_surface_heating_warms_only_daylit_surface_cells():
+    module = load_module()
+    block_vars = {
+        "hydro_u": torch.zeros((6, 2, 1, 3), dtype=torch.float64),
+        "topo": torch.zeros((2, 1, 3), dtype=torch.bool),
+        "surface_lon_deg": torch.zeros((2, 1), dtype=torch.float64),
+        "surface_lat_deg": torch.zeros((2, 1), dtype=torch.float64),
+        "surface_cell_depth_m": torch.tensor([200.0], dtype=torch.float64),
+    }
+    solar = module.SolarHeatingConfig(
+        start_time_utc=datetime(2026, 3, 20, 0, 0, 0, tzinfo=UTC),
+        center_longitude_deg=0.0,
+        center_latitude_deg=0.0,
+        sensible_heat_flux_w_m2=200.0,
+    )
+
+    module.apply_surface_heating(block_vars, current_time=12 * 3600.0, dt=10.0, solar_heating=solar)
+
+    heated = block_vars["hydro_u"][module.kIPR, :, :, 0]
+    assert torch.all(heated > 0.0)
+    assert torch.allclose(heated, heated[0, 0].expand_as(heated))
+    assert torch.all(block_vars["hydro_u"][module.kIPR, :, :, 1:] == 0.0)
+
+
+def test_apply_surface_heating_turns_off_at_night():
+    module = load_module()
+    block_vars = {
+        "hydro_u": torch.zeros((6, 1, 1, 2), dtype=torch.float64),
+        "topo": torch.zeros((1, 1, 2), dtype=torch.bool),
+        "surface_lon_deg": torch.zeros((1, 1), dtype=torch.float64),
+        "surface_lat_deg": torch.zeros((1, 1), dtype=torch.float64),
+        "surface_cell_depth_m": torch.tensor([200.0], dtype=torch.float64),
+    }
+    solar = module.SolarHeatingConfig(
+        start_time_utc=datetime(2026, 3, 20, 0, 0, 0, tzinfo=UTC),
+        center_longitude_deg=0.0,
+        center_latitude_deg=0.0,
+        sensible_heat_flux_w_m2=200.0,
+    )
+
+    module.apply_surface_heating(block_vars, current_time=0.0, dt=10.0, solar_heating=solar)
+
+    assert torch.all(block_vars["hydro_u"][module.kIPR] == 0.0)
 
 
 def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
@@ -360,13 +406,15 @@ def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
         def __init__(self):
             self.blocks = [FakeBlock()]
 
-    def fake_run_simulation(mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices):
+    def fake_run_simulation(
+        mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices, **kwargs
+    ):
         events.append(("run", current_time, duration))
         return mesh_vars, current_time + duration
 
     def fake_refine_simulation(mesh, block_vars, topo_vars, config_file, **kwargs):
         events.append(("refine", topo_vars["label"]))
-        assert kwargs == {}
+        assert kwargs == {"solar_heating": None}
         shape = block_vars["hydro_u"].shape
         next_shape = (shape[0], (shape[1] - 4) * 2 + 4, (shape[2] - 4) * 2 + 4, shape[3])
         refined = {
@@ -454,7 +502,9 @@ def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
         def __init__(self):
             self.blocks = [FakeBlock()]
 
-    def fake_run_simulation(mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices):
+    def fake_run_simulation(
+        mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices, **kwargs
+    ):
         events.append(("run", current_time, duration))
         return mesh_vars, current_time + duration
 
@@ -507,13 +557,13 @@ def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
     assert events == [
         ("output_dt", 3600.0),
         ("run", 0.0, 21600.0),
-        ("refine", "1p2km", {}),
+        ("refine", "1p2km", {"solar_heating": None}),
         ("ghost", (2, 12, 12, 3)),
         ("run", 21600.0, 21600.0),
-        ("refine", "0p6km", {}),
+        ("refine", "0p6km", {"solar_heating": None}),
         ("ghost", (2, 20, 20, 3)),
         ("run", 43200.0, 21600.0),
-        ("refine", "0p3km", {}),
+        ("refine", "0p3km", {"solar_heating": None}),
         ("ghost", (2, 36, 36, 3)),
     ]
 
