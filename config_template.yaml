@@ -133,6 +133,15 @@ forcing:
   const-gravity:
     grav1: -9.80665        # m/s² (Earth's standard gravity)
 
+  # Coriolis forcing using an f-plane approximation:
+  # x1 = vertical (up), x2 = east-west, x3 = north-south
+  # Only the vertical rotation component is retained.
+  coriolis:
+    type: xyz
+    omega1: {coriolis_omega1}   # vertical component = Omega * sin(latitude)
+    omega2: {coriolis_omega2}   # east-west component neglected
+    omega3: {coriolis_omega3}   # north-south component neglected
+
   top-sponge-lyr:
     tau: 1.e4
     width: 200.

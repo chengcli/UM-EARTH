@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import math
+import pytest
 import yaml
 
 from um_earth.cli import main
-from um_earth.configuration import ConfigOptions, render_config
+from um_earth.configuration import ConfigOptions, EARTH_ROTATION_RATE, render_config
 from um_earth.regions import load_region_from_kml
 
 
@@ -56,6 +58,11 @@ def test_render_config_from_kml():
     assert parsed["integration"]["start-date"].isoformat() == "2025-02-01"
     assert parsed["integration"]["end-date"].isoformat() == "2025-02-02"
     assert parsed["geometry"]["cells"]["nx2"] == 48
+    expected_omega1 = EARTH_ROTATION_RATE * math.sin(math.radians(parsed["geometry"]["center_latitude"]))
+    assert parsed["forcing"]["coriolis"]["type"] == "xyz"
+    assert parsed["forcing"]["coriolis"]["omega1"] == pytest.approx(expected_omega1)
+    assert parsed["forcing"]["coriolis"]["omega2"] == 0.0
+    assert parsed["forcing"]["coriolis"]["omega3"] == 0.0
 
 
 def test_cli_config_generate_from_kml(tmp_path, monkeypatch):

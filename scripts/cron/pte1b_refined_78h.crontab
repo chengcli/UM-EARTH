@@ -1,0 +1,2 @@
+CRON_TZ=America/Detroit
+0 14 * * * /bin/bash /home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_78h.sh >> /home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_78h.log 2>&1

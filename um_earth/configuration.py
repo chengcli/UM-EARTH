@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import re
 
 from .regions import RegionDefinition
+
+
+EARTH_ROTATION_RATE = 7.2921159e-5
 
 
 @dataclass(frozen=True)
@@ -36,13 +40,17 @@ def render_config(template: str, region: RegionDefinition, options: ConfigOption
 
     extents = region.extents_meters()
     center = region.center
+    center_latitude = center["latitude"]
     x2_extent = options.x2_extent if options.x2_extent is not None else extents["x2_extent"]
     x3_extent = options.x3_extent if options.x3_extent is not None else extents["x3_extent"]
+    coriolis_omega1 = EARTH_ROTATION_RATE * math.sin(math.radians(center_latitude))
+    coriolis_omega2 = 0.0
+    coriolis_omega3 = 0.0
 
     replacements = {
         "location_name": region.name,
         "location_description": f"Location: {region.name}",
-        "center_latitude": center["latitude"],
+        "center_latitude": center_latitude,
         "center_longitude": center["longitude"],
         "x1_max": options.x1_max,
         "x2_extent": x2_extent,
@@ -59,6 +67,9 @@ def render_config(template: str, region: RegionDefinition, options: ConfigOption
         "tlim": options.tlim,
         "nb2": options.nb2,
         "nb3": options.nb3,
+        "coriolis_omega1": f"{coriolis_omega1:.12e}",
+        "coriolis_omega2": f"{coriolis_omega2:.12e}",
+        "coriolis_omega3": f"{coriolis_omega3:.12e}",
     }
 
     rendered = template

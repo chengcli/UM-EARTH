@@ -39,6 +39,7 @@ class ForecastContext:
     current_time: float = 0.0
     refine_at_18h: bool = False
     solar_heating: object = None
+    is_runtime_restart: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,30 @@ def load_ranked_restart_module(restart_file: Path, rank: int):
             archive.extract(member, path=tmpdir, filter="data")
             part_path = Path(tmpdir) / member
             return torch.jit.load(str(part_path))
+
+
+def load_restart_state(
+    restart_file: Path,
+    *,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    module = load_ranked_restart_module(restart_file, current_rank())
+    state = {}
+    for name, data in module.named_buffers(recurse=True):
+        state[name] = data.to(device).to(torch.double)
+    for name, data in module.named_parameters(recurse=True):
+        state[name] = data.to(device).to(torch.double)
+    return state
+
+
+def is_runtime_restart_state(state: dict[str, torch.Tensor]) -> bool:
+    return (
+        "hydro_u" in state
+        and "hydro_w" in state
+        and "last_time" in state
+        and "last_cycle" in state
+        and state["hydro_u"].ndim == 4
+    )
 
 
 def default_output_dir(config_file: str) -> Path:
@@ -1097,6 +1122,56 @@ def prepare_initial_state(
     return block_vars, current_time
 
 
+def initialize_block_from_runtime_restart(
+    block: MeshBlock,
+    restart_file: Path,
+) -> tuple[dict[str, torch.Tensor], float]:
+    return block.initialize_from_restart(str(restart_file))
+
+
+def build_runtime_restart_context(
+    args: argparse.Namespace,
+    restart_file: Path,
+    restart_state: dict[str, torch.Tensor],
+    mesh: Mesh,
+    thermo_x: ThermoX,
+    kinet: Kinetics,
+    device: torch.device,
+    solar_heating: SolarHeatingConfig | None,
+    precip_indices: tuple[int, ...],
+) -> ForecastContext:
+    block = mesh.blocks[0]
+    block_vars, current_time = initialize_block_from_runtime_restart(block, restart_file)
+    block_vars = {
+        name: tensor.to(device).to(torch.double)
+        for name, tensor in block_vars.items()
+    }
+    if "topo" in block_vars:
+        block_vars["topo"] = block_vars["topo"].to(torch.bool)
+    block_vars = attach_surface_forcing_metadata(block, block_vars, solar_heating)
+    print_ok(
+        "Loaded runtime restart from",
+        restart_file,
+        "at time =",
+        current_time,
+        "seconds.",
+    )
+    return ForecastContext(
+        mesh=mesh,
+        thermo_x=thermo_x,
+        kinet=kinet,
+        device=device,
+        block_vars=block_vars,
+        ecmwf_hydro_u=[],
+        stage_topography=[],
+        precip_indices=precip_indices,
+        current_time=current_time,
+        refine_at_18h=False,
+        solar_heating=solar_heating,
+        is_runtime_restart=True,
+    )
+
+
 def log_loaded_inputs(
     block_vars: dict[str, torch.Tensor],
     stage_topography: list[dict[str, torch.Tensor]],
@@ -1113,6 +1188,27 @@ def log_loaded_inputs(
 
 def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
     restart_file = resolve_restart_file(args.input_dir)
+    precip_indices = precipitation_tracer_indices(args.config)
+    solar_heating = load_solar_heating_config(args.config, args.surface_heat_flux)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    mesh, thermo_x, kinet, device = create_mesh(
+        args.config, args.output_dir, requested_device=args.device
+    )
+    restart_state = load_restart_state(restart_file, device=device)
+    if is_runtime_restart_state(restart_state):
+        return build_runtime_restart_context(
+            args,
+            restart_file,
+            restart_state,
+            mesh,
+            thermo_x,
+            kinet,
+            device,
+            solar_heating,
+            precip_indices,
+        )
+
     topography_root = (
         Path(args.topography_dir).resolve()
         if args.topography_dir is not None
@@ -1121,13 +1217,6 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
     topography_files = discover_topography_files(
         str(topography_root),
         required_labels=selected_topography_labels(args.refinement_mode, args.topography_stage),
-    )
-    precip_indices = precipitation_tracer_indices(args.config)
-    solar_heating = load_solar_heating_config(args.config, args.surface_heat_flux)
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-
-    mesh, thermo_x, kinet, device = create_mesh(
-        args.config, args.output_dir, requested_device=args.device
     )
     time_slices, topography_modules = load_time_series_inputs(
         restart_file, topography_files, device
@@ -1319,6 +1408,10 @@ def run_forecast(args: argparse.Namespace) -> None:
     ctx = None
     try:
         ctx = build_forecast_context(args)
+        if getattr(ctx, "is_runtime_restart", False):
+            run_prediction_stage(ctx, args.prediction_duration)
+            finalize_forecast(ctx)
+            return
         run_hydrostatic_adjustment(ctx, args.hydrostatic_duration)
         if args.refinement_mode == "staged":
             if args.forcing_mode == "ghost":
@@ -1352,7 +1445,11 @@ def main():
     )
     parser.add_argument(
         "-i", "--input_dir", type=str,
-        default=None, help="directory containing regridded ERA5 tensor .part files."
+        default=None,
+        help=(
+            "prepared forecast input directory, prepared restart bundle, or a runtime "
+            "*.final.restart file to continue an existing prediction."
+        ),
     )
     parser.add_argument(
         "-o", "--output_dir", type=str,
