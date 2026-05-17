@@ -4,6 +4,7 @@ import tarfile
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import snapy
@@ -37,12 +38,22 @@ class ForecastContext:
     precip_indices: tuple[int, ...]
     current_time: float = 0.0
     refine_at_18h: bool = False
+    solar_heating: object = None
+    is_runtime_restart: bool = False
 
 
 @dataclass(frozen=True)
 class ForcingSchedule:
     interval_seconds: float
     next_index: int = 1
+
+
+@dataclass(frozen=True)
+class SolarHeatingConfig:
+    start_time_utc: datetime
+    center_longitude_deg: float
+    center_latitude_deg: float
+    sensible_heat_flux_w_m2: float
 
 
 def implicit_scheme_for_refinement_factor(refinement_factor: float) -> int:
@@ -140,6 +151,30 @@ def load_ranked_restart_module(restart_file: Path, rank: int):
             return torch.jit.load(str(part_path))
 
 
+def load_restart_state(
+    restart_file: Path,
+    *,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    module = load_ranked_restart_module(restart_file, current_rank())
+    state = {}
+    for name, data in module.named_buffers(recurse=True):
+        state[name] = data.to(device).to(torch.double)
+    for name, data in module.named_parameters(recurse=True):
+        state[name] = data.to(device).to(torch.double)
+    return state
+
+
+def is_runtime_restart_state(state: dict[str, torch.Tensor]) -> bool:
+    return (
+        "hydro_u" in state
+        and "hydro_w" in state
+        and "last_time" in state
+        and "last_cycle" in state
+        and state["hydro_u"].ndim == 4
+    )
+
+
 def default_output_dir(config_file: str) -> Path:
     return infer_run_dir(config_file) / "forecast_output"
 
@@ -200,6 +235,31 @@ def precipitation_tracer_indices(config_file: str) -> tuple[int, ...]:
         if "(p)" in name or ",p)" in name:
             indices.append(kICY + offset)
     return tuple(indices)
+
+
+def load_solar_heating_config(
+    config_file: str,
+    sensible_heat_flux_w_m2: float,
+) -> SolarHeatingConfig | None:
+    if sensible_heat_flux_w_m2 <= 0.0:
+        return None
+
+    with open(config_file, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+
+    geometry = config["geometry"]
+    start_date = config["integration"]["start-date"]
+    if hasattr(start_date, "year"):
+        start_time_utc = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+    else:
+        start_time_utc = datetime.strptime(str(start_date), "%Y-%m-%d").replace(tzinfo=UTC)
+
+    return SolarHeatingConfig(
+        start_time_utc=start_time_utc,
+        center_longitude_deg=float(geometry["center_longitude"]),
+        center_latitude_deg=float(geometry["center_latitude"]),
+        sensible_heat_flux_w_m2=float(sensible_heat_flux_w_m2),
+    )
 
 
 def init_dist(backend: str, requested_device: str = "auto") -> torch.device:
@@ -400,6 +460,60 @@ def build_topography_field_for_block(
     )
     return sampled.squeeze(0).squeeze(0).unsqueeze(-1)
 
+
+def block_longitude_latitude(
+    block: MeshBlock,
+    solar_heating: SolarHeatingConfig,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    coord = block.module("coord")
+    x2v = coord.buffer("x2v").to(torch.double)
+    x3v = coord.buffer("x3v").to(torch.double)
+    layout = block.get_layout()
+    rank = block.options.layout().rank()
+    lx2, lx3, _ = layout.loc_of(rank)
+    coord_opts = block.options.coord()
+    width_x2 = coord_opts.x2max() - coord_opts.x2min()
+    width_x3 = coord_opts.x3max() - coord_opts.x3min()
+    global_x2min = coord_opts.x2min() - lx2 * width_x2
+    global_x2max = global_x2min + width_x2 * block.options.layout().px()
+    global_x3min = coord_opts.x3min() - lx3 * width_x3
+    global_x3max = global_x3min + width_x3 * block.options.layout().py()
+    global_x2center = 0.5 * (global_x2min + global_x2max)
+    global_x3center = 0.5 * (global_x3min + global_x3max)
+
+    center_lat_rad = torch.deg2rad(torch.tensor(solar_heating.center_latitude_deg, dtype=torch.double, device=x2v.device))
+    lon = solar_heating.center_longitude_deg + torch.rad2deg((x2v - global_x2center) / (6371000.0 * torch.cos(center_lat_rad)))
+    lat = solar_heating.center_latitude_deg + torch.rad2deg((x3v - global_x3center) / 6371000.0)
+    lat_grid, lon_grid = torch.meshgrid(lat, lon, indexing="ij")
+    return lon_grid, lat_grid
+
+
+def attach_surface_forcing_metadata(
+    block: MeshBlock,
+    block_vars: dict[str, torch.Tensor],
+    solar_heating: SolarHeatingConfig | None,
+) -> dict[str, torch.Tensor]:
+    if solar_heating is None:
+        return block_vars
+
+    coord = block.module("coord")
+    lon_grid, lat_grid = block_longitude_latitude(block, solar_heating)
+    if hasattr(coord, "buffer"):
+        try:
+            x1f = coord.buffer("x1f").to(torch.double)
+            dz = x1f[1] - x1f[0]
+        except Exception:
+            x1v = coord.buffer("x1v").to(torch.double)
+            dz = x1v[1] - x1v[0]
+    else:
+        x1v = coord.buffer("x1v").to(torch.double)
+        dz = x1v[1] - x1v[0]
+
+    block_vars["surface_lon_deg"] = lon_grid
+    block_vars["surface_lat_deg"] = lat_grid
+    block_vars["surface_cell_depth_m"] = dz.reshape(1)
+    return block_vars
+
 def equilibrate_initial_fields(block: MeshBlock,
                                thermo_x: ThermoX,
                                block_vars: dict[str, torch.Tensor]):
@@ -432,14 +546,91 @@ def remove_surface_precipitation(
     hydro_u: torch.Tensor,
     topo: torch.Tensor,
     precip_indices: tuple[int, ...],
-) -> None:
-    if not precip_indices: return 
+) -> torch.Tensor:
+    if not precip_indices:
+        return hydro_u
 
     surface = surface_precipitation_mask(topo)
-    if not torch.any(surface): return
+    if not torch.any(surface):
+        return hydro_u
 
     for index in precip_indices:
         hydro_u[index] = torch.where(surface, torch.zeros_like(hydro_u[index]), hydro_u[index])
+    return hydro_u
+
+
+def solar_cos_zenith_angle(
+    latitude_deg: torch.Tensor,
+    longitude_deg: torch.Tensor,
+    when_utc: datetime,
+) -> torch.Tensor:
+    day_of_year = when_utc.timetuple().tm_yday
+    utc_hour = (
+        when_utc.hour
+        + when_utc.minute / 60.0
+        + when_utc.second / 3600.0
+        + when_utc.microsecond / 3.6e9
+    )
+
+    gamma = 2.0 * torch.pi * (
+        (day_of_year - 1) + (utc_hour - 12.0) / 24.0
+    ) / 365.0
+    gamma_t = torch.tensor(gamma, dtype=torch.double, device=latitude_deg.device)
+    decl = (
+        0.006918
+        - 0.399912 * torch.cos(gamma_t)
+        + 0.070257 * torch.sin(gamma_t)
+        - 0.006758 * torch.cos(2.0 * gamma_t)
+        + 0.000907 * torch.sin(2.0 * gamma_t)
+        - 0.002697 * torch.cos(3.0 * gamma_t)
+        + 0.001480 * torch.sin(3.0 * gamma_t)
+    )
+    eqtime_min = 229.18 * (
+        0.000075
+        + 0.001868 * torch.cos(gamma_t)
+        - 0.032077 * torch.sin(gamma_t)
+        - 0.014615 * torch.cos(2.0 * gamma_t)
+        - 0.040849 * torch.sin(2.0 * gamma_t)
+    )
+    true_solar_time_min = torch.remainder(
+        utc_hour * 60.0 + eqtime_min + 4.0 * longitude_deg,
+        1440.0,
+    )
+    hour_angle_deg = true_solar_time_min / 4.0 - 180.0
+    lat_rad = torch.deg2rad(latitude_deg)
+    hour_angle_rad = torch.deg2rad(hour_angle_deg)
+    return (
+        torch.sin(lat_rad) * torch.sin(decl)
+        + torch.cos(lat_rad) * torch.cos(decl) * torch.cos(hour_angle_rad)
+    )
+
+
+def apply_surface_heating(
+    block_vars: dict[str, torch.Tensor],
+    current_time: float,
+    dt: float,
+    solar_heating: SolarHeatingConfig | None,
+) -> None:
+    if solar_heating is None:
+        return
+    if solar_heating.sensible_heat_flux_w_m2 <= 0.0:
+        return
+    if "surface_lon_deg" not in block_vars or "surface_lat_deg" not in block_vars:
+        return
+
+    topo = block_vars["topo"]
+    surface = surface_precipitation_mask(topo)
+    if not torch.any(surface):
+        return
+
+    when_utc = solar_heating.start_time_utc + timedelta(seconds=current_time)
+    lon = block_vars["surface_lon_deg"]
+    lat = block_vars["surface_lat_deg"]
+    cos_zenith = torch.clamp(solar_cos_zenith_angle(lat, lon, when_utc), min=0.0)
+    flux = solar_heating.sensible_heat_flux_w_m2 * cos_zenith
+    dz = float(block_vars["surface_cell_depth_m"].reshape(-1)[0].item())
+    volumetric_heating = flux / max(dz, 1.0e-12)
+    block_vars["hydro_u"][kIPR] += volumetric_heating.unsqueeze(-1) * surface.to(block_vars["hydro_u"].dtype) * dt
 
 def next_forcing_time(schedule: ForcingSchedule, available_slices: int) -> float | None:
     if schedule.next_index >= available_slices:
@@ -532,14 +723,16 @@ def synchronize_hydro_state(
 def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
                         eos,
                         precip_indices: tuple[int, ...],
-                        dt: float, 
+                        dt: float,
+                        current_time: float = 0.0,
+                        solar_heating: SolarHeatingConfig | None = None,
                         tau: float = 100.,
-                        cooling_rate: float = 2. / 86400.):
+                        cooling_rate: float = 1.8 / 86400.):
     topo = block_vars["topo"]
     w = block_vars["hydro_w"]
     u = block_vars["hydro_u"]
     rho = w[kIDN]
-    cv = 717.5
+    cv_air = 717.5 # J/(kg K)
 
     # boundary layer forcing
     u[kIV1] -= rho * w[kIV1] * topo.int() * dt / tau
@@ -547,18 +740,10 @@ def add_frigate_forcing(block_vars: dict[str, torch.Tensor],
     u[kIV3] -= rho * w[kIV3] * topo.int() * dt / tau
 
     # uniform cooling
-    #u[IPR] -= rho * cv * cooling_rate * (1. - topo.int()) * dt
-
-    # surface heating
-    # surface_level = torch.zeros_like(topo)
-    # surface_level[:,:,1:] = topo[:,:,:-1] - topo[:,:,1:]
+    u[kIPR] -= rho * cv_air * cooling_rate * (1. - topo.int()) * dt
 
     remove_surface_precipitation(u, topo, precip_indices)
-
-    #updated_hydro_w = remove_surface_precipitation(w, topo, precip_indices)
-    #if updated_hydro_w.data_ptr() != w.data_ptr():
-    #    block_vars["hydro_w"] = updated_hydro_w
-    #    block_vars["hydro_u"] = eos.compute("W->U", (updated_hydro_w,))
+    apply_surface_heating(block_vars, current_time, dt, solar_heating)
 
 def run_simulation(mesh: Mesh,
                    thermo_x: ThermoX,
@@ -567,6 +752,7 @@ def run_simulation(mesh: Mesh,
                    current_time: float,
                    duration: float,
                    precip_indices: tuple[int, ...],
+                   solar_heating: SolarHeatingConfig | None = None,
                    forcing_schedule: ForcingSchedule | None = None,
                    forcing_states: list[torch.Tensor] | None = None):
     block0 = mesh.blocks[0]
@@ -590,7 +776,14 @@ def run_simulation(mesh: Mesh,
         for stage in range(len(intg.stages)):
             mesh.forward(mesh_vars, dt, stage)
             block_vars = synchronize_hydro_state(mesh, block_vars)
-            add_frigate_forcing(block_vars, eos, precip_indices, dt)
+            add_frigate_forcing(
+                block_vars,
+                eos,
+                precip_indices,
+                dt,
+                current_time=current_time,
+                solar_heating=solar_heating,
+            )
             block_vars = synchronize_hydro_state(mesh, block_vars)
 
         err = mesh.check_redo(mesh_vars)
@@ -688,18 +881,20 @@ def run_spinup(mesh: Mesh,
                current_time: float,
                config_file: str,
                chunk_duration: float,
-               precip_indices: tuple[int, ...]):
+               precip_indices: tuple[int, ...],
+               solar_heating: SolarHeatingConfig | None = None):
     for output in mesh.blocks[0].options.outputs():
         output.dt(3600.)
 
     for chunk in range(1, 4):
         start_clock = time.time()
         mesh_vars, current_time = run_simulation(
-            mesh, thermo_x, kinet, [block_vars], current_time, chunk_duration, precip_indices
+            mesh, thermo_x, kinet, [block_vars], current_time, chunk_duration, precip_indices,
+            solar_heating=solar_heating,
         )
         block_vars = mesh_vars[0]
         mesh, thermo_x, kinet, block_vars = refine_simulation(
-            mesh, block_vars, stage_topography[chunk], config_file
+            mesh, block_vars, stage_topography[chunk], config_file, solar_heating=solar_heating
         )
 
         block_vars = nudge_from_ecmwf(mesh, thermo_x, kinet,
@@ -725,6 +920,7 @@ def run_staged_ghost_schedule(
     config_file: str,
     chunk_duration: float,
     precip_indices: tuple[int, ...],
+    solar_heating: SolarHeatingConfig | None = None,
     refine_at_18h: bool = False,
 ):
     if len(ecmwf_hydro_u) < 4:
@@ -751,7 +947,8 @@ def run_staged_ghost_schedule(
         duration = max(target_time - current_time, 0.0)
         start_clock = time.time()
         mesh_vars, current_time = run_simulation(
-            mesh, thermo_x, kinet, [block_vars], current_time, duration, precip_indices
+            mesh, thermo_x, kinet, [block_vars], current_time, duration, precip_indices,
+            solar_heating=solar_heating,
         )
         block_vars = mesh_vars[0]
 
@@ -761,6 +958,7 @@ def run_staged_ghost_schedule(
                 block_vars,
                 topo_vars,
                 config_file,
+                solar_heating=solar_heating,
             )
 
         nghost = mesh.blocks[0].options.coord().nghost()
@@ -849,6 +1047,7 @@ def refine_simulation(mesh: Mesh,
                       block_vars: dict[str, torch.Tensor],
                       topo_vars: dict[str, torch.Tensor],
                       config_file: str,
+                      solar_heating: SolarHeatingConfig | None = None,
                       *,
                       cfl: float | None = None,
                       implicit_scheme: int | None = None):
@@ -895,6 +1094,7 @@ def refine_simulation(mesh: Mesh,
     mesh_vars, _ = mesh.initialize([{"hydro_w": hydro_w}])
     mesh_vars[0]["topo"] = topo_mask
     block_vars = mesh_vars[0]
+    block_vars = attach_surface_forcing_metadata(block, block_vars, solar_heating)
 
     return mesh, thermo_x, kinet, block_vars
 
@@ -904,6 +1104,7 @@ def prepare_initial_state(
     thermo_x: ThermoX,
     block_vars: dict[str, torch.Tensor],
     topo_vars: dict[str, torch.Tensor],
+    solar_heating: SolarHeatingConfig | None = None,
 ) -> tuple[dict[str, torch.Tensor], float]:
     block = mesh.blocks[0]
     block_vars = equilibrate_initial_fields(block, thermo_x, block_vars)
@@ -917,7 +1118,58 @@ def prepare_initial_state(
     mesh_vars, current_time = mesh.initialize([{"hydro_w": block_vars["hydro_w"]}])
     block_vars = mesh_vars[0]
     block_vars["topo"] = x1v < topo0
+    block_vars = attach_surface_forcing_metadata(block, block_vars, solar_heating)
     return block_vars, current_time
+
+
+def initialize_block_from_runtime_restart(
+    block: MeshBlock,
+    restart_file: Path,
+) -> tuple[dict[str, torch.Tensor], float]:
+    return block.initialize_from_restart(str(restart_file))
+
+
+def build_runtime_restart_context(
+    args: argparse.Namespace,
+    restart_file: Path,
+    restart_state: dict[str, torch.Tensor],
+    mesh: Mesh,
+    thermo_x: ThermoX,
+    kinet: Kinetics,
+    device: torch.device,
+    solar_heating: SolarHeatingConfig | None,
+    precip_indices: tuple[int, ...],
+) -> ForecastContext:
+    block = mesh.blocks[0]
+    block_vars, current_time = initialize_block_from_runtime_restart(block, restart_file)
+    block_vars = {
+        name: tensor.to(device).to(torch.double)
+        for name, tensor in block_vars.items()
+    }
+    if "topo" in block_vars:
+        block_vars["topo"] = block_vars["topo"].to(torch.bool)
+    block_vars = attach_surface_forcing_metadata(block, block_vars, solar_heating)
+    print_ok(
+        "Loaded runtime restart from",
+        restart_file,
+        "at time =",
+        current_time,
+        "seconds.",
+    )
+    return ForecastContext(
+        mesh=mesh,
+        thermo_x=thermo_x,
+        kinet=kinet,
+        device=device,
+        block_vars=block_vars,
+        ecmwf_hydro_u=[],
+        stage_topography=[],
+        precip_indices=precip_indices,
+        current_time=current_time,
+        refine_at_18h=False,
+        solar_heating=solar_heating,
+        is_runtime_restart=True,
+    )
 
 
 def log_loaded_inputs(
@@ -936,6 +1188,27 @@ def log_loaded_inputs(
 
 def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
     restart_file = resolve_restart_file(args.input_dir)
+    precip_indices = precipitation_tracer_indices(args.config)
+    solar_heating = load_solar_heating_config(args.config, args.surface_heat_flux)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    mesh, thermo_x, kinet, device = create_mesh(
+        args.config, args.output_dir, requested_device=args.device
+    )
+    restart_state = load_restart_state(restart_file, device=device)
+    if is_runtime_restart_state(restart_state):
+        return build_runtime_restart_context(
+            args,
+            restart_file,
+            restart_state,
+            mesh,
+            thermo_x,
+            kinet,
+            device,
+            solar_heating,
+            precip_indices,
+        )
+
     topography_root = (
         Path(args.topography_dir).resolve()
         if args.topography_dir is not None
@@ -944,12 +1217,6 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
     topography_files = discover_topography_files(
         str(topography_root),
         required_labels=selected_topography_labels(args.refinement_mode, args.topography_stage),
-    )
-    precip_indices = precipitation_tracer_indices(args.config)
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-
-    mesh, thermo_x, kinet, device = create_mesh(
-        args.config, args.output_dir, requested_device=args.device
     )
     time_slices, topography_modules = load_time_series_inputs(
         restart_file, topography_files, device
@@ -964,7 +1231,7 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
         stage_topography = [topography_modules[args.topography_stage]]
     log_loaded_inputs(block_vars, stage_topography)
     block_vars, current_time = prepare_initial_state(
-        mesh, thermo_x, block_vars, stage_topography[0]
+        mesh, thermo_x, block_vars, stage_topography[0], solar_heating
     )
 
     return ForecastContext(
@@ -978,6 +1245,7 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
         precip_indices=precip_indices,
         current_time=current_time,
         refine_at_18h=args.refine_at_18h,
+        solar_heating=solar_heating,
     )
 
 
@@ -1004,6 +1272,7 @@ def run_hydrostatic_adjustment(ctx: ForecastContext, duration: float) -> None:
         ctx.current_time,
         duration,
         ctx.precip_indices,
+        solar_heating=ctx.solar_heating,
     )
     ctx.block_vars = mesh_vars[0]
     ctx.current_time = 0.0
@@ -1036,6 +1305,7 @@ def run_spinup_stage(ctx: ForecastContext, config_file: str, chunk_duration: flo
         config_file,
         chunk_duration,
         ctx.precip_indices,
+        solar_heating=ctx.solar_heating,
     )
     end_clock = time.time()
     print_ok(
@@ -1067,6 +1337,7 @@ def run_spinup_stage_with_ghost_forcing(
         config_file,
         chunk_duration,
         ctx.precip_indices,
+        solar_heating=ctx.solar_heating,
         refine_at_18h=ctx.refine_at_18h,
     )
     end_clock = time.time()
@@ -1088,6 +1359,7 @@ def run_prediction_stage(ctx: ForecastContext, duration: float) -> None:
         ctx.current_time,
         duration,
         ctx.precip_indices,
+        solar_heating=ctx.solar_heating,
     )
     ctx.block_vars = mesh_vars[0]
     end_clock = time.time()
@@ -1113,6 +1385,7 @@ def run_prediction_stage_with_ghost_forcing(
         ctx.current_time,
         duration,
         ctx.precip_indices,
+        solar_heating=ctx.solar_heating,
         forcing_schedule=ForcingSchedule(interval_seconds=forcing_interval_seconds),
         forcing_states=ctx.ecmwf_hydro_u,
     )
@@ -1135,6 +1408,10 @@ def run_forecast(args: argparse.Namespace) -> None:
     ctx = None
     try:
         ctx = build_forecast_context(args)
+        if getattr(ctx, "is_runtime_restart", False):
+            run_prediction_stage(ctx, args.prediction_duration)
+            finalize_forecast(ctx)
+            return
         run_hydrostatic_adjustment(ctx, args.hydrostatic_duration)
         if args.refinement_mode == "staged":
             if args.forcing_mode == "ghost":
@@ -1168,7 +1445,11 @@ def main():
     )
     parser.add_argument(
         "-i", "--input_dir", type=str,
-        default=None, help="directory containing regridded ERA5 tensor .part files."
+        default=None,
+        help=(
+            "prepared forecast input directory, prepared restart bundle, or a runtime "
+            "*.final.restart file to continue an existing prediction."
+        ),
     )
     parser.add_argument(
         "-o", "--output_dir", type=str,
@@ -1226,6 +1507,12 @@ def main():
         "--device", type=str,
         default="auto", choices=["auto", "cpu", "cuda"],
         help="execution device override."
+    )
+    parser.add_argument(
+        "--surface-heat-flux",
+        type=float,
+        default=200.0,
+        help="peak daytime sensible heat flux H in W/m^2; applied as H*max(cos(zenith),0) on exposed surface cells.",
     )
     args = parser.parse_args()
 

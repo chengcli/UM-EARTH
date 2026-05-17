@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover
 
 EARTH_RADIUS = 6_371_000.0
 TARGET_HEIGHTS_M = (2100.0, 2500.0, 2900.0, 3300.0, 3700.0, 4100.0)
-VERTICAL_VELOCITY_LIMIT = 1.2
+VERTICAL_VELOCITY_LIMIT = 4.0
 
 
 def _load_center_and_start(config_file: str) -> tuple[float, float, datetime]:

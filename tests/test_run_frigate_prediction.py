@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -63,6 +64,19 @@ def test_default_output_dir_uses_run_local_forecast_output(tmp_path):
     config_file.write_text("", encoding="utf-8")
 
     assert module.default_output_dir(str(config_file)) == run_dir / "forecast_output"
+
+
+def test_is_runtime_restart_state_detects_runtime_restart_metadata():
+    module = load_module()
+    state = {
+        "hydro_u": torch.zeros((8, 62, 29, 56), dtype=torch.float64),
+        "hydro_w": torch.zeros((8, 62, 29, 56), dtype=torch.float64),
+        "last_time": torch.tensor([86400.0], dtype=torch.float64),
+        "last_cycle": torch.tensor([123], dtype=torch.int64),
+    }
+
+    assert module.is_runtime_restart_state(state) is True
+    assert module.is_runtime_restart_state({"hydro_w": torch.zeros((4, 8, 62, 29, 56))}) is False
 
 
 def test_discover_topography_files_returns_all_stages(tmp_path):
@@ -305,7 +319,7 @@ def test_run_simulation_resynchronizes_hydro_w_after_state_updates():
     original_evolve = module.evolve_kinetics
     try:
         module.add_frigate_forcing = (
-            lambda block_vars, eos, precip_indices, dt: block_vars["hydro_u"].add_(3.0)
+            lambda block_vars, eos, precip_indices, dt, **kwargs: block_vars["hydro_u"].add_(3.0)
         )
         module.evolve_kinetics = (
             lambda hydro_w, eos, thermo_x, thermo_y, kinet, dt: torch.ones_like(hydro_w[module.kICY:])
@@ -327,6 +341,51 @@ def test_run_simulation_resynchronizes_hydro_w_after_state_updates():
     expected_hydro_w[..., 0] += 1.0
     assert torch.equal(hydro_w_out, expected_hydro_w)
     assert torch.equal(mesh_vars[0]["hydro_w"], expected_hydro_w)
+
+
+def test_apply_surface_heating_warms_only_daylit_surface_cells():
+    module = load_module()
+    block_vars = {
+        "hydro_u": torch.zeros((6, 2, 1, 3), dtype=torch.float64),
+        "topo": torch.zeros((2, 1, 3), dtype=torch.bool),
+        "surface_lon_deg": torch.zeros((2, 1), dtype=torch.float64),
+        "surface_lat_deg": torch.zeros((2, 1), dtype=torch.float64),
+        "surface_cell_depth_m": torch.tensor([200.0], dtype=torch.float64),
+    }
+    solar = module.SolarHeatingConfig(
+        start_time_utc=datetime(2026, 3, 20, 0, 0, 0, tzinfo=UTC),
+        center_longitude_deg=0.0,
+        center_latitude_deg=0.0,
+        sensible_heat_flux_w_m2=200.0,
+    )
+
+    module.apply_surface_heating(block_vars, current_time=12 * 3600.0, dt=10.0, solar_heating=solar)
+
+    heated = block_vars["hydro_u"][module.kIPR, :, :, 0]
+    assert torch.all(heated > 0.0)
+    assert torch.allclose(heated, heated[0, 0].expand_as(heated))
+    assert torch.all(block_vars["hydro_u"][module.kIPR, :, :, 1:] == 0.0)
+
+
+def test_apply_surface_heating_turns_off_at_night():
+    module = load_module()
+    block_vars = {
+        "hydro_u": torch.zeros((6, 1, 1, 2), dtype=torch.float64),
+        "topo": torch.zeros((1, 1, 2), dtype=torch.bool),
+        "surface_lon_deg": torch.zeros((1, 1), dtype=torch.float64),
+        "surface_lat_deg": torch.zeros((1, 1), dtype=torch.float64),
+        "surface_cell_depth_m": torch.tensor([200.0], dtype=torch.float64),
+    }
+    solar = module.SolarHeatingConfig(
+        start_time_utc=datetime(2026, 3, 20, 0, 0, 0, tzinfo=UTC),
+        center_longitude_deg=0.0,
+        center_latitude_deg=0.0,
+        sensible_heat_flux_w_m2=200.0,
+    )
+
+    module.apply_surface_heating(block_vars, current_time=0.0, dt=10.0, solar_heating=solar)
+
+    assert torch.all(block_vars["hydro_u"][module.kIPR] == 0.0)
 
 
 def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
@@ -360,13 +419,15 @@ def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
         def __init__(self):
             self.blocks = [FakeBlock()]
 
-    def fake_run_simulation(mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices):
+    def fake_run_simulation(
+        mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices, **kwargs
+    ):
         events.append(("run", current_time, duration))
         return mesh_vars, current_time + duration
 
     def fake_refine_simulation(mesh, block_vars, topo_vars, config_file, **kwargs):
         events.append(("refine", topo_vars["label"]))
-        assert kwargs == {}
+        assert kwargs == {"solar_heating": None}
         shape = block_vars["hydro_u"].shape
         next_shape = (shape[0], (shape[1] - 4) * 2 + 4, (shape[2] - 4) * 2 + 4, shape[3])
         refined = {
@@ -454,7 +515,9 @@ def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
         def __init__(self):
             self.blocks = [FakeBlock()]
 
-    def fake_run_simulation(mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices):
+    def fake_run_simulation(
+        mesh, thermo_x, kinet, mesh_vars, current_time, duration, precip_indices, **kwargs
+    ):
         events.append(("run", current_time, duration))
         return mesh_vars, current_time + duration
 
@@ -507,13 +570,13 @@ def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
     assert events == [
         ("output_dt", 3600.0),
         ("run", 0.0, 21600.0),
-        ("refine", "1p2km", {}),
+        ("refine", "1p2km", {"solar_heating": None}),
         ("ghost", (2, 12, 12, 3)),
         ("run", 21600.0, 21600.0),
-        ("refine", "0p6km", {}),
+        ("refine", "0p6km", {"solar_heating": None}),
         ("ghost", (2, 20, 20, 3)),
         ("run", 43200.0, 21600.0),
-        ("refine", "0p3km", {}),
+        ("refine", "0p3km", {"solar_heating": None}),
         ("ghost", (2, 36, 36, 3)),
     ]
 
@@ -572,6 +635,69 @@ def test_run_forecast_uses_staged_ghost_path(monkeypatch):
         ("staged-ghost", "ctx", "dummy.yaml", 21600.0),
         ("predict", "ctx", 86400.0),
         ("finalize", "ctx"),
+    ]
+
+
+def test_run_forecast_runtime_restart_skips_spinup_and_hydrostatic(monkeypatch):
+    module = load_module()
+    calls = []
+
+    restart_ctx = SimpleNamespace(
+        is_runtime_restart=True,
+        mesh=object(),
+        block_vars={},
+        current_time=86400.0,
+    )
+
+    def fake_build(args):
+        calls.append(("build", args.input_dir))
+        return restart_ctx
+
+    def fake_hydro(*args, **kwargs):
+        raise AssertionError("runtime restart should not run hydrostatic adjustment")
+
+    def fake_spinup(*args, **kwargs):
+        raise AssertionError("runtime restart should not run spinup")
+
+    def fake_spinup_ghost(*args, **kwargs):
+        raise AssertionError("runtime restart should not run staged ghost spinup")
+
+    def fake_prediction(ctx, duration):
+        calls.append(("predict", ctx, duration))
+
+    def fake_prediction_ghost(*args, **kwargs):
+        raise AssertionError("runtime restart should not enter ghost forcing path")
+
+    def fake_finalize(ctx):
+        calls.append(("finalize", ctx))
+
+    monkeypatch.setattr(module, "build_forecast_context", fake_build)
+    monkeypatch.setattr(module, "run_hydrostatic_adjustment", fake_hydro)
+    monkeypatch.setattr(module, "run_spinup_stage", fake_spinup)
+    monkeypatch.setattr(module, "run_spinup_stage_with_ghost_forcing", fake_spinup_ghost)
+    monkeypatch.setattr(module, "run_prediction_stage", fake_prediction)
+    monkeypatch.setattr(module, "run_prediction_stage_with_ghost_forcing", fake_prediction_ghost)
+    monkeypatch.setattr(module, "finalize_forecast", fake_finalize)
+    monkeypatch.setattr(module.dist, "is_available", lambda: False)
+    monkeypatch.setattr(module.dist, "is_initialized", lambda: False)
+
+    args = SimpleNamespace(
+        input_dir="pte1b.final.restart",
+        refinement_mode="staged",
+        forcing_mode="ghost",
+        hydrostatic_duration=10.0,
+        spinup_chunk_duration=21600.0,
+        prediction_duration=43200.0,
+        forcing_interval_seconds=21600.0,
+        config="dummy.yaml",
+    )
+
+    module.run_forecast(args)
+
+    assert calls == [
+        ("build", "pte1b.final.restart"),
+        ("predict", restart_ctx, 43200.0),
+        ("finalize", restart_ctx),
     ]
 
 
