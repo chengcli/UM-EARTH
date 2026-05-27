@@ -13,6 +13,7 @@ The examples below use the active `pte1b` forecast cases:
 
 * one-GPU forecast case: `2026-04-12`
 * two-GPU forecast case: `2026-04-13`
+* current refined 78-hour two-GPU case: `2026-05-25`
 
 ## Inputs
 
@@ -21,6 +22,8 @@ Required inputs:
 * a region KML file
 * a target date in `YYYY-MM-DD` format
 * either ERA5 access or a local forecast-data directory
+* forecast-mode runs require `cfgrib` and ecCodes in the active Python
+  environment
 
 Example region:
 
@@ -128,6 +131,8 @@ forecast_lowres_ghost_24h/
 forecast_lowres_ghost_24h_2gpu/
 forecast_refined_ghost_24h/
 forecast_refined_ghost_24h_2gpu/
+forecast_refined_ghost_78h_2gpu/
+forecast_refined_ghost_78h_2gpu_refine18/
 ```
 
 ## Stage 2: Low-Resolution Check With 2 GPUs
@@ -203,8 +208,9 @@ Schedule:
 * start from the 00h slice on the base mesh
 * refine at 06h
 * refine again at 12h
-* apply a ghost-only refresh at 18h
-* continue on the `0p6km` mesh for the remaining forecast segment
+* at 18h, either apply a ghost-only refresh or pass `--refine-at-18h` to
+  refine onto the `0p3km` mesh
+* continue for the final prediction segment
 
 For a full 24-hour forecast using the `00/06/12/18` forecast slices, launch the
 refined run with:
@@ -215,6 +221,16 @@ refined run with:
 
 The `21600 s` value is intentional. The staged `06/12/18` schedule covers the
 first 18 hours, and the final prediction segment covers the last 6 hours.
+
+For a 78-hour forecast using the same `00/06/12/18` forecast slices, use:
+
+* `--refinement-mode staged`
+* `--forcing-mode ghost`
+* `--refine-at-18h` if the final sync should refine onto `0p3km`
+* `--prediction-duration 216000`
+
+The `216000 s` value is the 60-hour segment after the initial 18-hour staged
+sync window, so the total forecast span is 78 hours.
 
 ### Example Refined Two-GPU Run
 
@@ -231,6 +247,40 @@ env CUDA_VISIBLE_DEVICES=0,1 MASTER_PORT=29533 PYTHONFAULTHANDLER=1 \
     --forcing-mode ghost \
     --prediction-duration 21600 \
     2>&1 | tee /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_refined_ghost_24h_2gpu/run.log
+```
+
+### Current 78-Hour Two-GPU Run With 18h Refinement
+
+The current one-off May 25 run is captured by:
+
+```bash
+/home/chengcli/scix/workspace/UM-EARTH/scripts/run_pte1b_20260525_refined_78h_2gpu_refine18.sh
+```
+
+It prepares and launches:
+
+* forecast source: `/home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data/20260525`
+* run directory: `/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-25`
+* restart bundle: `forecast_input/regridded_pte1b_20260525_00_tensors/regridded_pte1b_20260525_00.restart`
+* output directory: `forecast_refined_ghost_78h_2gpu_refine18`
+* tmux session: `pte1b_20260525_refined_78h_2gpu_refine18`
+* master port: `29525`
+
+The runtime command uses:
+
+```bash
+env CUDA_VISIBLE_DEVICES=0,1 PYTHONFAULTHANDLER=1 \
+  torchrun --nproc-per-node=2 --master-port 29525 \
+  /home/chengcli/scix/workspace/UM-EARTH/run_frigate_prediction.py \
+    -c /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-25/pte1b.yaml \
+    -i /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-25/forecast_input/regridded_pte1b_20260525_00_tensors \
+    -o /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-25/forecast_refined_ghost_78h_2gpu_refine18 \
+    --topography-dir /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-25/topography/products \
+    --device cuda \
+    --refinement-mode staged \
+    --forcing-mode ghost \
+    --refine-at-18h \
+    --prediction-duration 216000
 ```
 
 ## Example Detached Scripts
@@ -309,46 +359,55 @@ tmux attach -t pte1b_20260413_refined_2gpu
 tail -n 80 /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-13/forecast_refined_ghost_24h_2gpu/run.log
 ```
 
+For the current May 25 78-hour run:
+
+```bash
+tmux attach -t pte1b_20260525_refined_78h_2gpu_refine18
+tail -n 80 /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-25/forecast_refined_ghost_78h_2gpu_refine18/run.log
+```
+
 ## Daily Automation
 
-A daily refined `pte1b` run for a 48-hour forecast window is installed via
-`crontab` and launches at `6:00 PM` Eastern Time every day.
+A daily refined `pte1b` run for a 78-hour forecast window is available via
+`crontab`. In the current user crontab the entry is present but commented out.
 
 Repo files:
 
-* launcher: `/home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh`
-* crontab file: `/home/chengcli/scix/workspace/UM-EARTH/scripts/cron/pte1b_refined_48h.crontab`
-* cron log target: `/home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log`
+* launcher: `/home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_78h.sh`
+* crontab file: `/home/chengcli/scix/workspace/UM-EARTH/scripts/cron/pte1b_refined_78h.crontab`
+* cron log target: `/home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_78h.log`
 
-Active crontab entry:
+Crontab entry from the repo file:
 
 ```cron
 CRON_TZ=America/Detroit
-0 18 * * * /home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh >> /home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_48h.log 2>&1
+0 14 * * * /bin/bash /home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_78h.sh >> /home/chengcli/data/2025.FRIGATE/cron/pte1b_daily_refined_78h.log 2>&1
 ```
 
 Behavior:
 
 * target date defaults to the current ET calendar day
-* source forecast directory is `/home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data/YYYYMMDD`
+* unless `FORECAST_YMD` is set, the launcher picks the newest forecast
+  directory on or before the previous ET calendar day
+* source forecast root is `/home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data`
 * run directory is `/home/chengcli/data/2025.FRIGATE/runs/pte1b-YYYY-MM-DD`
-* the template copied for config/topography is `/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-14-axisfix`
+* topography is copied from `/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-04-01` by default
 * preparation uses forecast mode with `--nY 2 --nX 1`
 * runtime uses two GPUs with `torchrun --nproc-per-node=2`
 * runtime mode is `--refinement-mode staged --forcing-mode ghost`
-* staged refinement occurs at `06h` and `12h`, with a ghost-only update at `18h`
-* `--prediction-duration 108000` is used so the total forecast span is 48 hours
+* daily staged refinement occurs at `06h` and `12h`, with a ghost-only update at `18h`
+* `--prediction-duration 216000` is used so the total forecast span is 78 hours
 
 Manual test example:
 
 ```bash
-/home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_48h.sh 20260414
+/home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_refined_78h.sh 20260525
 ```
 
 Install or refresh the cron job with:
 
 ```bash
-crontab /home/chengcli/scix/workspace/UM-EARTH/scripts/cron/pte1b_refined_48h.crontab
+crontab /home/chengcli/scix/workspace/UM-EARTH/scripts/cron/pte1b_refined_78h.crontab
 crontab -l
 ```
 
