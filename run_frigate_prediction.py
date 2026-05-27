@@ -24,6 +24,7 @@ from refine_utils import coarsen_spatial, conservative_refine, refine_spatial
 torch.set_default_dtype(torch.float64)
 
 TOPO_SEQUENCE = ("2p4km", "1p2km", "0p6km", "0p3km")
+RESTART_BUNDLE_MAGIC = "SNAPY_RESTART_BUNDLE_V1"
 
 
 @dataclass
@@ -128,17 +129,82 @@ def current_rank() -> int:
     return int(os.environ.get("RANK", "0"))
 
 
-def load_ranked_restart_module(restart_file: Path, rank: int):
-    if restart_file.suffix == ".part":
-        return torch.jit.load(str(restart_file))
-    if restart_file.suffix != ".restart":
-        raise ValueError(f"Unsupported restart input type: {restart_file}")
+def _is_snapy_restart_bundle(restart_file: Path) -> bool:
+    try:
+        with restart_file.open("rb") as stream:
+            return stream.readline().decode("utf-8", errors="replace").rstrip("\n") == RESTART_BUNDLE_MAGIC
+    except OSError:
+        return False
 
+
+@dataclass(frozen=True)
+class RestartBundleEntry:
+    name: str
+    size: int
+    offset: int
+
+
+def _read_snapy_restart_bundle_index(restart_file: Path) -> list[RestartBundleEntry]:
+    with restart_file.open("rb") as stream:
+        magic = stream.readline().decode("utf-8", errors="strict").rstrip("\n")
+        if magic != RESTART_BUNDLE_MAGIC:
+            raise ValueError(f"{restart_file} is not a snapy restart bundle")
+
+        count_line = stream.readline().decode("utf-8", errors="strict").strip()
+        if not count_line:
+            raise ValueError(f"{restart_file} restart bundle missing entry count")
+
+        raw_entries = []
+        for _ in range(int(count_line)):
+            line = stream.readline().decode("utf-8", errors="strict").rstrip("\n")
+            name, size_text = line.split("\t", 1)
+            raw_entries.append((name, int(size_text)))
+
+        terminator = stream.readline().decode("utf-8", errors="strict").rstrip("\n")
+        if terminator != "":
+            raise ValueError(f"{restart_file} restart bundle header missing terminator")
+
+        payload_offset = stream.tell()
+        entries = []
+        running = 0
+        for name, size in raw_entries:
+            entries.append(RestartBundleEntry(name=name, size=size, offset=payload_offset + running))
+            running += size
+        return entries
+
+
+def _entry_matches_rank(name: str, rank: int) -> bool:
+    return name.endswith(".part") and f".block{rank}." in name
+
+
+def _load_ranked_module_from_snapy_bundle(restart_file: Path, rank: int):
+    entries = sorted(
+        entry for entry in _read_snapy_restart_bundle_index(restart_file)
+        if _entry_matches_rank(entry.name, rank)
+    )
+    if not entries:
+        raise FileNotFoundError(
+            f"Could not find block{rank} part file in restart bundle {restart_file}"
+        )
+
+    entry = entries[0]
+    with restart_file.open("rb") as stream:
+        stream.seek(entry.offset)
+        payload = stream.read(entry.size)
+    if len(payload) != entry.size:
+        raise OSError(f"Truncated payload for {entry.name} in {restart_file}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        part_path = Path(tmpdir) / Path(entry.name).name
+        part_path.write_bytes(payload)
+        return torch.jit.load(str(part_path))
+
+
+def _load_ranked_module_from_tar_bundle(restart_file: Path, rank: int):
     with tarfile.open(restart_file, "r") as archive:
         members = sorted(
             member for member in archive.getnames()
-            if member.endswith(f".block{rank}.00000.part")
-            or (f".block{rank}." in member and member.endswith(".part"))
+            if _entry_matches_rank(member, rank)
         )
         if not members:
             raise FileNotFoundError(
@@ -149,6 +215,16 @@ def load_ranked_restart_module(restart_file: Path, rank: int):
             archive.extract(member, path=tmpdir, filter="data")
             part_path = Path(tmpdir) / member
             return torch.jit.load(str(part_path))
+
+
+def load_ranked_restart_module(restart_file: Path, rank: int):
+    if restart_file.suffix == ".part":
+        return torch.jit.load(str(restart_file))
+    if restart_file.suffix != ".restart":
+        raise ValueError(f"Unsupported restart input type: {restart_file}")
+    if _is_snapy_restart_bundle(restart_file):
+        return _load_ranked_module_from_snapy_bundle(restart_file, rank)
+    return _load_ranked_module_from_tar_bundle(restart_file, rank)
 
 
 def load_restart_state(

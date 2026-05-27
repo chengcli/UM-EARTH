@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR=/home/chengcli/data/2025.FRIGATE
+BASE_DIR="${BASE_DIR:-/data00/2025.FRIGATE}"
 RUNS_DIR="$BASE_DIR/runs"
 TOPO_SOURCE_RUN="${TOPO_SOURCE_RUN:-$RUNS_DIR/pte1b-2026-04-01}"
 WORKSPACE=/home/chengcli/scix/workspace/UM-EARTH
@@ -24,7 +24,10 @@ if [[ ! -x "$TORCHRUN_BIN" ]]; then
 fi
 
 requested_ymd=${1:-$(TZ=America/Detroit date +%Y%m%d)}
-target_ymd=$("$PYTHON_BIN" - "$FORECAST_ROOT" "$requested_ymd" <<'PY'
+if [[ -n "${FORECAST_YMD:-}" ]]; then
+  target_ymd="$FORECAST_YMD"
+else
+  target_ymd=$("$PYTHON_BIN" - "$FORECAST_ROOT" "$requested_ymd" <<'PY'
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
@@ -45,6 +48,7 @@ if not candidates:
 print(candidates[-1])
 PY
 )
+fi
 target_date=$("$PYTHON_BIN" - "$target_ymd" <<'PY'
 from datetime import datetime
 import sys
@@ -65,6 +69,7 @@ raw_topography_dir="$run_dir/topography/raw/pte1b"
 session_name="pte1b_${target_ymd}_refined_78h_2gpu"
 master_port=$((29000 + 10#${target_ymd:4:4}))
 source_merged_tif="$TOPO_SOURCE_RUN/topography/raw/pte1b/pte1b_merged_10m.tif"
+source_topography_dir="$TOPO_SOURCE_RUN/topography/products"
 
 echo "Execution date: $requested_ymd"
 echo "Forecast date: $target_ymd"
@@ -100,7 +105,13 @@ PY
 
 cp "$source_merged_tif" "$raw_topography_dir/pte1b_merged_10m.tif"
 
-"$PYTHON_BIN" - "$WORKSPACE" "$KML_FILE" "$raw_topography_dir/pte1b_merged_10m.tif" "$topography_dir" <<'PY'
+if [[ -f "$source_topography_dir/pte1b_topo_2p4km.pt" \
+   && -f "$source_topography_dir/pte1b_topo_1p2km.pt" \
+   && -f "$source_topography_dir/pte1b_topo_0p6km.pt" \
+   && -f "$source_topography_dir/pte1b_topo_0p3km.pt" ]]; then
+  cp "$source_topography_dir"/pte1b_topo_*.pt "$topography_dir"/
+else
+  "$PYTHON_BIN" - "$WORKSPACE" "$KML_FILE" "$raw_topography_dir/pte1b_merged_10m.tif" "$topography_dir" <<'PY'
 from pathlib import Path
 import sys
 
@@ -129,6 +140,7 @@ build_resolution_products(
     target_resolutions_km=DEFAULT_TARGET_RESOLUTIONS_KM,
 )
 PY
+fi
 
 if [[ ! -f "$restart_bundle" ]]; then
   "$PYTHON_BIN" "$WORKSPACE/prepare_initial_condition.py" \

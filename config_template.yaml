@@ -126,6 +126,9 @@ outputs:
   - type: netcdf
     variables: [thermo, path]
     dt: 3600.
+  - type: netcdf
+    variables: [prim_stat]
+    dt: 3600.
 
 forcing:
   # Gravity for hydrostatic balance calculations
