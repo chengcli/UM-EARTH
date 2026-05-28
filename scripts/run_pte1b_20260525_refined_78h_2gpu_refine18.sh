@@ -7,8 +7,6 @@ TOPO_SOURCE_RUN="${TOPO_SOURCE_RUN:-$RUNS_DIR/pte1b-2026-04-01}"
 WORKSPACE=/home/chengcli/scix/workspace/UM-EARTH
 KML_FILE="$BASE_DIR/pte1b.kml"
 FORECAST_ROOT="$BASE_DIR/ECWMF_prediction_data"
-TARGET_YMD=20260525
-TARGET_DATE=2026-05-25
 PYENV_ROOT=/home/chengcli/pyenv
 PYTHON_BIN="$PYENV_ROOT/bin/python"
 TORCHRUN_BIN="$PYENV_ROOT/bin/torchrun"
@@ -24,6 +22,15 @@ if [[ ! -x "$TORCHRUN_BIN" ]]; then
   echo "torchrun executable not found: $TORCHRUN_BIN" >&2
   exit 1
 fi
+
+TARGET_YMD="${TARGET_YMD:-20260525}"
+TARGET_DATE="${TARGET_DATE:-$("$PYTHON_BIN" - "$TARGET_YMD" <<'PY'
+from datetime import datetime
+import sys
+
+print(datetime.strptime(sys.argv[1], "%Y%m%d").strftime("%Y-%m-%d"))
+PY
+)}"
 
 forecast_dir="$FORECAST_ROOT/$TARGET_YMD"
 run_dir="$RUNS_DIR/pte1b-$TARGET_DATE"

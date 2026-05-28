@@ -53,6 +53,7 @@ def test_write_digest_and_config(tmp_path):
     rendered = write_config(config_path, region, prepared, date="2025-02-01")
     parsed = yaml.safe_load(rendered)
     assert parsed["integration"]["start-date"].isoformat() == "2025-02-01"
+    assert parsed["integration"]["cfl"] == 0.9
     assert parsed["geometry"]["cells"]["nx2"] == prepared.nx2
 
 

@@ -57,6 +57,7 @@ def test_render_config_from_kml():
     assert parsed["geometry"]["center_latitude"] > 38.49
     assert parsed["integration"]["start-date"].isoformat() == "2025-02-01"
     assert parsed["integration"]["end-date"].isoformat() == "2025-02-02"
+    assert parsed["integration"]["cfl"] == 0.9
     assert parsed["geometry"]["cells"]["nx2"] == 48
     expected_omega1 = EARTH_ROTATION_RATE * math.sin(math.radians(parsed["geometry"]["center_latitude"]))
     assert parsed["forcing"]["coriolis"]["type"] == "xyz"
@@ -93,6 +94,7 @@ def test_cli_config_generate_from_kml(tmp_path, monkeypatch):
     assert rc == 0
     config = yaml.safe_load(output.read_text(encoding="utf-8"))
     assert config["geometry"]["cells"]["nx3"] == 48
+    assert config["integration"]["cfl"] == 0.9
     assert config["integration"]["start-date"].isoformat() == "2025-02-01"
 
 
