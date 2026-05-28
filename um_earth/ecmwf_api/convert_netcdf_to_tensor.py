@@ -39,7 +39,6 @@ Output:
 import argparse
 import os
 import sys
-import tarfile
 from typing import Dict, Optional
 from pathlib import Path
 import re
@@ -57,6 +56,9 @@ try:
     import numpy as np
 except ImportError:
     raise ImportError("netCDF4 and numpy are required. Install with: pip install netCDF4 numpy")
+
+
+RESTART_BUNDLE_MAGIC = "SNAPY_RESTART_BUNDLE_V1"
 
 
 def save_tensors(tensor_map: Dict[str, torch.Tensor], filename: str) -> None:
@@ -99,9 +101,20 @@ def block_part_name(stem: str, rank: int, file_number: int = 0) -> str:
 def bundle_restart_parts(part_files: list[str], restart_file: str) -> str:
     restart_path = Path(restart_file)
     restart_path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(restart_path, "w") as tar:
-        for path in sorted(part_files):
-            tar.add(path, arcname=Path(path).name)
+    sorted_parts = sorted(Path(path) for path in part_files)
+    sizes = [path.stat().st_size for path in sorted_parts]
+
+    with restart_path.open("wb") as out:
+        out.write(f"{RESTART_BUNDLE_MAGIC}\n".encode("utf-8"))
+        out.write(f"{len(sorted_parts)}\n".encode("utf-8"))
+        for path, size in zip(sorted_parts, sizes):
+            out.write(f"{path.name}\t{size}\n".encode("utf-8"))
+        out.write(b"\n")
+
+        for path in sorted_parts:
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    out.write(chunk)
     return str(restart_path)
 
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
-import tarfile
 
 import torch
 
@@ -40,6 +39,18 @@ def save_part(path: Path, hydro_w: torch.Tensor) -> None:
     torch.jit.script(TensorModule()).save(str(path))
 
 
+def read_bundle_entries(path: Path) -> list[tuple[str, int]]:
+    with path.open("rb") as stream:
+        assert stream.readline().decode("utf-8").rstrip("\n") == "SNAPY_RESTART_BUNDLE_V1"
+        count = int(stream.readline().decode("utf-8").strip())
+        entries = []
+        for _ in range(count):
+            name, size_text = stream.readline().decode("utf-8").rstrip("\n").split("\t", 1)
+            entries.append((name, int(size_text)))
+        assert stream.readline() == b"\n"
+    return entries
+
+
 def test_convert_directory_bundles_two_rank_restart(tmp_path, monkeypatch):
     module = load_convert_module()
     blocks_dir = tmp_path / "blocks"
@@ -49,7 +60,7 @@ def test_convert_directory_bundles_two_rank_restart(tmp_path, monkeypatch):
 
     written = []
 
-    def fake_convert(input_file: str, output_file: str | None = None) -> str:
+    def fake_convert(input_file: str, output_file: str | None = None, **kwargs) -> str:
         output_path = Path(output_file)
         output_path.write_text("part", encoding="utf-8")
         written.append(output_path.name)
@@ -74,24 +85,22 @@ def test_convert_directory_bundles_two_rank_restart(tmp_path, monkeypatch):
         "regridded_case.block0.00000.part",
         "regridded_case.block1.00000.part",
     ]
-    with tarfile.open(restart_file, "r") as archive:
-        assert sorted(archive.getnames()) == [
-            "regridded_case.block0.00000.part",
-            "regridded_case.block1.00000.part",
-        ]
+    assert read_bundle_entries(restart_file) == [
+        ("regridded_case.block0.00000.part", 4),
+        ("regridded_case.block1.00000.part", 4),
+    ]
 
 
 def test_load_restart_slice_selects_rank_from_restart_bundle(tmp_path, monkeypatch):
     module = load_run_module()
+    convert_module = load_convert_module()
     rank0 = tmp_path / "regridded_case.block0.00000.part"
     rank1 = tmp_path / "regridded_case.block1.00000.part"
     save_part(rank0, torch.zeros((4, 8, 2, 2, 2), dtype=torch.float64))
     save_part(rank1, torch.ones((4, 8, 2, 2, 2), dtype=torch.float64) * 7.0)
 
     restart_file = tmp_path / "regridded_case.restart"
-    with tarfile.open(restart_file, "w") as archive:
-        archive.add(rank0, arcname=rank0.name)
-        archive.add(rank1, arcname=rank1.name)
+    convert_module.bundle_restart_parts([str(rank0), str(rank1)], str(restart_file))
 
     monkeypatch.setenv("RANK", "1")
     block_vars = module.load_restart_slice(restart_file, index=2)
@@ -180,10 +189,10 @@ def test_build_topography_field_for_block_uses_block_position():
     topo_vars = {
         "topography": torch.tensor(
             [
-                [0.0, 0.0, 0.0, 0.0],
-                [1.0, 1.0, 1.0, 1.0],
-                [2.0, 2.0, 2.0, 2.0],
-                [3.0, 3.0, 3.0, 3.0],
+                [0.0, 1.0, 2.0, 3.0],
+                [0.0, 1.0, 2.0, 3.0],
+                [0.0, 1.0, 2.0, 3.0],
+                [0.0, 1.0, 2.0, 3.0],
             ],
             dtype=torch.float64,
         ),

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR="${BASE_DIR:-/data00/2025.FRIGATE}"
+BASE_DIR="${BASE_DIR:-/home/chengcli/data/2025.FRIGATE}"
 RUNS_DIR="$BASE_DIR/runs"
 TOPO_SOURCE_RUN="${TOPO_SOURCE_RUN:-$RUNS_DIR/pte1b-2026-04-01}"
 WORKSPACE=/home/chengcli/scix/workspace/UM-EARTH
@@ -23,59 +23,38 @@ if [[ ! -x "$TORCHRUN_BIN" ]]; then
   exit 1
 fi
 
-requested_ymd=${1:-$(TZ=America/Detroit date +%Y%m%d)}
-if [[ -n "${FORECAST_YMD:-}" ]]; then
-  target_ymd="$FORECAST_YMD"
-else
-  target_ymd=$("$PYTHON_BIN" - "$FORECAST_ROOT" "$requested_ymd" <<'PY'
-from datetime import datetime, timedelta
-from pathlib import Path
-import sys
-
-forecast_root = Path(sys.argv[1])
-requested = sys.argv[2]
-requested_dt = datetime.strptime(requested, "%Y%m%d")
-source_cutoff = (requested_dt - timedelta(days=1)).strftime("%Y%m%d")
-candidates = sorted(
-    path.name
-    for path in forecast_root.iterdir()
-    if path.is_dir() and len(path.name) == 8 and path.name.isdigit() and path.name <= source_cutoff
-)
-if not candidates:
-    raise SystemExit(
-        f"No forecast directories available on or before previous day {source_cutoff} in {forecast_root}"
-    )
-print(candidates[-1])
-PY
-)
-fi
-target_date=$("$PYTHON_BIN" - "$target_ymd" <<'PY'
+TARGET_YMD="${TARGET_YMD:-20260525}"
+TARGET_DATE="${TARGET_DATE:-$("$PYTHON_BIN" - "$TARGET_YMD" <<'PY'
 from datetime import datetime
 import sys
 
-date = datetime.strptime(sys.argv[1], "%Y%m%d")
-print(date.strftime("%Y-%m-%d"))
+print(datetime.strptime(sys.argv[1], "%Y%m%d").strftime("%Y-%m-%d"))
 PY
-)
+)}"
 
-forecast_dir="$FORECAST_ROOT/$target_ymd"
-run_dir="$RUNS_DIR/pte1b-$target_date"
+forecast_dir="$FORECAST_ROOT/$TARGET_YMD"
+run_dir="$RUNS_DIR/pte1b-$TARGET_DATE"
 forecast_input_dir="$run_dir/forecast_input"
-tensor_dir="$forecast_input_dir/regridded_pte1b_${target_ymd}_00_tensors"
-restart_bundle="$tensor_dir/regridded_pte1b_${target_ymd}_00.restart"
-output_dir="$run_dir/forecast_refined_ghost_78h_2gpu"
+tensor_dir="$forecast_input_dir/regridded_pte1b_${TARGET_YMD}_00_tensors"
+restart_bundle="$tensor_dir/regridded_pte1b_${TARGET_YMD}_00.restart"
+output_dir="$run_dir/forecast_refined_ghost_78h_2gpu_refine18"
 topography_dir="$run_dir/topography/products"
 raw_topography_dir="$run_dir/topography/raw/pte1b"
-session_name="pte1b_${target_ymd}_refined_78h_2gpu"
-master_port=$((29000 + 10#${target_ymd:4:4}))
+session_name="pte1b_${TARGET_YMD}_refined_78h_2gpu_refine18"
+master_port=$((29000 + 10#${TARGET_YMD:4:4}))
 source_merged_tif="$TOPO_SOURCE_RUN/topography/raw/pte1b/pte1b_merged_10m.tif"
 source_topography_dir="$TOPO_SOURCE_RUN/topography/products"
 
-echo "Execution date: $requested_ymd"
-echo "Forecast date: $target_ymd"
-echo "Target date: $target_date"
+echo "Forecast date: $TARGET_YMD"
+echo "Target date: $TARGET_DATE"
 echo "Forecast source: $forecast_dir"
 echo "Run directory: $run_dir"
+echo "Output directory: $output_dir"
+
+if [[ ! -d "$forecast_dir" ]]; then
+  echo "Forecast directory not found: $forecast_dir" >&2
+  exit 1
+fi
 
 if [[ ! -f "$source_merged_tif" ]]; then
   echo "Source merged topography file not found: $source_merged_tif" >&2
@@ -84,7 +63,7 @@ fi
 
 mkdir -p "$run_dir" "$topography_dir" "$forecast_input_dir" "$raw_topography_dir"
 
-"$PYTHON_BIN" - "$WORKSPACE" "$KML_FILE" "$run_dir/pte1b.yaml" "$target_date" <<'PY'
+"$PYTHON_BIN" - "$WORKSPACE" "$KML_FILE" "$run_dir/pte1b.yaml" "$TARGET_DATE" <<'PY'
 from pathlib import Path
 import sys
 

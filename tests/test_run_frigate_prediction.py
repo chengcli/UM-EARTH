@@ -388,7 +388,7 @@ def test_apply_surface_heating_turns_off_at_night():
     assert torch.all(block_vars["hydro_u"][module.kIPR] == 0.0)
 
 
-def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
+def test_run_staged_ghost_schedule_can_skip_18h_refinement(monkeypatch):
     module = load_module()
     events = []
 
@@ -467,6 +467,7 @@ def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
         "config.yaml",
         21600.0,
         (),
+        refine_at_18h=False,
     )
 
     assert current_time == 64800.0
@@ -484,7 +485,7 @@ def test_run_staged_ghost_schedule_refines_at_06_and_12_only(monkeypatch):
     ]
 
 
-def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
+def test_run_staged_ghost_schedule_refines_at_18h_by_default(monkeypatch):
     module = load_module()
     events = []
 
@@ -562,7 +563,6 @@ def test_run_staged_ghost_schedule_can_refine_at_18h(monkeypatch):
         "config.yaml",
         21600.0,
         (),
-        refine_at_18h=True,
     )
 
     assert current_time == 64800.0
