@@ -283,6 +283,43 @@ env CUDA_VISIBLE_DEVICES=0,1 PYTHONFAULTHANDLER=1 \
     --prediction-duration 216000
 ```
 
+### Runtime Restart With Fine NetCDF Output
+
+Runtime restart files written by a refined run can be used as direct
+`run_frigate_prediction.py` inputs. In this path, the driver loads the embedded
+state and time from the restart, skips hydrostatic adjustment and spinup, and
+runs only the requested prediction segment.
+
+The current May 26 fine-output continuation is captured by:
+
+```bash
+/home/chengcli/scix/workspace/UM-EARTH/scripts/run_pte1b_20260526_restart_00037_fine_5min_4hour.sh
+```
+
+It restarts from:
+
+* `/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-26/forecast_refined_ghost_78h_2gpu_refine18/pte1b.00037.restart`
+
+and writes to the sibling directory:
+
+* `/home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-26/forecast_fine_output_5min_4hour`
+
+The script derives `pte1b.fine_5min.yaml` from the refined run config, removes
+all `type: restart` outputs, and sets the remaining NetCDF output streams to
+`dt: 300.0`. It then runs for `14400 s` (4 hours) with two GPUs. This avoids
+writing large 5-minute restart files while preserving 5-minute NetCDF output.
+
+Useful overrides:
+
+```bash
+RESTART_FILE=/path/to/pte1b.00037.restart \
+SOURCE_CONFIG=/path/to/pte1b.refined.yaml \
+OUTPUT_DIR=/path/to/forecast_fine_output_5min_4hour \
+PREDICTION_DURATION=14400 \
+OUTPUT_DT=300.0 \
+/home/chengcli/scix/workspace/UM-EARTH/scripts/run_pte1b_20260526_restart_00037_fine_5min_4hour.sh
+```
+
 ## Example Detached Scripts
 
 For production runs, use a detached launcher that survives logout. `tmux` is the
@@ -364,6 +401,13 @@ For the current May 25 78-hour run:
 ```bash
 tmux attach -t pte1b_20260525_refined_78h_2gpu_refine18
 tail -n 80 /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-25/forecast_refined_ghost_78h_2gpu_refine18/run.log
+```
+
+For the May 26 fine-output restart continuation:
+
+```bash
+tmux attach -t pte1b_20260526_restart_00037_fine_5min_4hour
+tail -n 80 /home/chengcli/data/2025.FRIGATE/runs/pte1b-2026-05-26/forecast_fine_output_5min_4hour/run.log
 ```
 
 ## Daily Automation
