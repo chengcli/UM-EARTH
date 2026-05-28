@@ -208,9 +208,11 @@ Schedule:
 * start from the 00h slice on the base mesh
 * refine at 06h
 * refine again at 12h
-* at 18h, either apply a ghost-only refresh or pass `--refine-at-18h` to
-  refine onto the `0p3km` mesh
+* refine again at 18h onto the `0p3km` mesh
 * continue for the final prediction segment
+
+Pass `--no-refine-at-18h` only when the 18h sync should be a ghost-zone
+refresh without the final refinement.
 
 For a full 24-hour forecast using the `00/06/12/18` forecast slices, launch the
 refined run with:
@@ -226,7 +228,6 @@ For a 78-hour forecast using the same `00/06/12/18` forecast slices, use:
 
 * `--refinement-mode staged`
 * `--forcing-mode ghost`
-* `--refine-at-18h` if the final sync should refine onto `0p3km`
 * `--prediction-duration 216000`
 
 The `216000 s` value is the 60-hour segment after the initial 18-hour staged
@@ -279,7 +280,6 @@ env CUDA_VISIBLE_DEVICES=0,1 PYTHONFAULTHANDLER=1 \
     --device cuda \
     --refinement-mode staged \
     --forcing-mode ghost \
-    --refine-at-18h \
     --prediction-duration 216000
 ```
 
@@ -395,7 +395,7 @@ Behavior:
 * preparation uses forecast mode with `--nY 2 --nX 1`
 * runtime uses two GPUs with `torchrun --nproc-per-node=2`
 * runtime mode is `--refinement-mode staged --forcing-mode ghost`
-* daily staged refinement occurs at `06h` and `12h`, with a ghost-only update at `18h`
+* daily staged refinement occurs at `06h`, `12h`, and `18h`
 * `--prediction-duration 216000` is used so the total forecast span is 78 hours
 
 Manual test example:

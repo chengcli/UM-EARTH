@@ -147,7 +147,7 @@ fi
 
 mkdir -p "$output_dir"
 
-cmd="cd $WORKSPACE && env CUDA_VISIBLE_DEVICES=0,1 PYTHONFAULTHANDLER=1 PATH=$PYENV_ROOT/bin:\$PATH $TORCHRUN_BIN --nproc-per-node=2 --master-port $master_port $WORKSPACE/run_frigate_prediction.py -c $run_dir/pte1b.yaml -i $tensor_dir -o $output_dir --topography-dir $topography_dir --device cuda --refinement-mode staged --forcing-mode ghost --refine-at-18h --prediction-duration 216000 2>&1 | tee $output_dir/run.log"
+cmd="cd $WORKSPACE && env CUDA_VISIBLE_DEVICES=0,1 PYTHONFAULTHANDLER=1 PATH=$PYENV_ROOT/bin:\$PATH $TORCHRUN_BIN --nproc-per-node=2 --master-port $master_port $WORKSPACE/run_frigate_prediction.py -c $run_dir/pte1b.yaml -i $tensor_dir -o $output_dir --topography-dir $topography_dir --device cuda --refinement-mode staged --forcing-mode ghost --prediction-duration 216000 2>&1 | tee $output_dir/run.log"
 
 tmux new-session -d -s "$session_name" "$cmd"
 

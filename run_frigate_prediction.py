@@ -38,7 +38,7 @@ class ForecastContext:
     stage_topography: list[dict[str, torch.Tensor]]
     precip_indices: tuple[int, ...]
     current_time: float = 0.0
-    refine_at_18h: bool = False
+    refine_at_18h: bool = True
     solar_heating: object = None
     is_runtime_restart: bool = False
 
@@ -997,7 +997,7 @@ def run_staged_ghost_schedule(
     chunk_duration: float,
     precip_indices: tuple[int, ...],
     solar_heating: SolarHeatingConfig | None = None,
-    refine_at_18h: bool = False,
+    refine_at_18h: bool = True,
 ):
     if len(ecmwf_hydro_u) < 4:
         raise ValueError(
@@ -1553,9 +1553,9 @@ def main():
         default="nudge", choices=["nudge", "ghost"],
         help=(
             "apply whole-domain nudging or refresh lateral ghost zones from ERA5. "
-            "With staged refinement, ghost mode refines at 06h and 12h and applies "
-            "a ghost-only refresh at 18h by default; pass --refine-at-18h to refine "
-            "onto 0p3km at 18h instead."
+            "With staged refinement, ghost mode refines at 06h, 12h, and 18h "
+            "by default; pass --no-refine-at-18h to apply only a ghost-zone "
+            "refresh at 18h instead."
         )
     )
     parser.add_argument(
@@ -1564,10 +1564,21 @@ def main():
     )
     parser.add_argument(
         "--refine-at-18h",
+        dest="refine_at_18h",
         action="store_true",
+        default=True,
         help=(
             "with staged ghost forcing, refine again at 18h onto the 0p3km stage "
-            "instead of applying only a ghost-zone refresh."
+            "(default)."
+        ),
+    )
+    parser.add_argument(
+        "--no-refine-at-18h",
+        dest="refine_at_18h",
+        action="store_false",
+        help=(
+            "with staged ghost forcing, apply only a ghost-zone refresh at 18h "
+            "instead of refining onto the 0p3km stage."
         ),
     )
     parser.add_argument(
