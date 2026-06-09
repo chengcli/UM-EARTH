@@ -1,0 +1,7 @@
+# Earth Location Table
+# Format: Name,Description,Lat,Lon
+# Longitude: negative for West, positive for East
+# Latitude: negative for South, positive for North
+Name,Description,Lat,Lon
+site_T,Trinity Site,33.6,-106.4
+site_1,Test point,33.7,-106.3
