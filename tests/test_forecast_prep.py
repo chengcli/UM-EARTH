@@ -8,7 +8,12 @@ import yaml
 
 import prepare_initial_condition as prepare_module
 from um_earth.cli import main as cli_main
-from um_earth.ecmwf_api.ingest_forecast_data import ingest_forecast_cycle, select_forecast_cycle
+from um_earth.ecmwf_api.ingest_forecast_data import (
+    discover_hres_inputs,
+    ingest_forecast_cycle,
+    select_forecast_cycle,
+    select_hres_cycle,
+)
 from um_earth.frigate_pipeline import run_frigate_prepare
 
 
@@ -80,6 +85,108 @@ def test_ingest_forecast_cycle_writes_expected_netcdf_outputs(tmp_path, monkeypa
     topo = xr.open_dataset(topo_path)
     np.testing.assert_allclose(topo["topography"].values, np.full((2, 2), 10.0, dtype=np.float32))
     topo.close()
+
+
+def _write_hres_file(
+    root: Path,
+    lead: int,
+    cycle: str = "06",
+    prefix: str = "uom_a1_",
+) -> Path:
+    base = np.datetime64(f"2026-07-15T{cycle}:00:00")
+    valid = base + np.timedelta64(lead, "h")
+    valid_text = np.datetime_as_string(valid, unit="s").replace("-", "").replace(":", "")
+    valid_text = valid_text.replace("T", "T") + "Z"
+    path = root / (
+        f"{prefix}ifs-ens-cf_od_oper_fc_20260715T{cycle}0000Z_"
+        f"{valid_text}_{lead}h"
+    )
+    path.write_bytes(b"GRIB")
+    return path
+
+
+def test_discover_and_select_hres_cycle_validates_requested_leads(tmp_path):
+    for lead in (0, 6, 12, 18, 19):
+        _write_hres_file(tmp_path, lead)
+
+    discovered = discover_hres_inputs(tmp_path)
+    assert sorted(discovered["20260715"]["06"]) == [0, 6, 12, 18, 19]
+
+    date_str, cycle, files = select_hres_cycle(
+        tmp_path,
+        date_str="20260715",
+        cycle="06",
+        lead_hours=[0, 6, 12, 18, 19],
+    )
+    assert (date_str, cycle) == ("20260715", "06")
+    assert list(files) == [0, 6, 12, 18, 19]
+
+
+def test_select_hres_cycle_can_choose_delivery_prefix(tmp_path):
+    for lead in (0, 6, 12, 18):
+        _write_hres_file(tmp_path, lead, prefix="uom_a1_")
+        _write_hres_file(tmp_path, lead, prefix="uom_t1_")
+
+    _, _, files = select_hres_cycle(
+        tmp_path,
+        date_str="20260715",
+        cycle="06",
+        lead_hours=[0, 6, 12, 18],
+        file_prefix="uom_a1_",
+    )
+
+    assert all(path.name.startswith("uom_a1_") for path in files.values())
+
+
+def test_ingest_hres_cycle_writes_selected_times(tmp_path, monkeypatch):
+    leads = (0, 6, 12, 18, 19)
+    for lead in leads:
+        _write_hres_file(tmp_path, lead)
+
+    latitudes = np.array([34.0, 33.5], dtype=np.float32)
+    longitudes = np.array([-107.0, -106.5], dtype=np.float32)
+    levels = np.array([1000, 900], dtype=np.int32)
+
+    def fake_open(path: Path):
+        lead = int(path.name.rsplit("_", 1)[1][:-1])
+        shape = (1, 2, 2, 2)
+        return xr.Dataset(
+            data_vars={
+                name: (
+                    ("time", "pressure_level", "latitude", "longitude"),
+                    np.full(shape, lead + 1, dtype=np.float32),
+                )
+                for name in ("t", "u", "v", "w", "q", "ciwc", "clwc", "cswc", "crwc")
+            },
+            coords={
+                "time": [np.datetime64("2026-07-15T06:00") + np.timedelta64(lead, "h")],
+                "pressure_level": levels,
+                "latitude": latitudes,
+                "longitude": longitudes,
+            },
+        )
+
+    monkeypatch.setattr(
+        "um_earth.ecmwf_api.ingest_forecast_data._open_hres_pressure_file",
+        fake_open,
+    )
+    result = ingest_forecast_cycle(
+        tmp_path,
+        tmp_path / "out",
+        date_str="20260715",
+        cycle="06",
+        lead_hours=leads,
+    )
+
+    assert result["format"] == "hres-delivery"
+    dynamics = xr.open_dataset(result["dynamics"])
+    np.testing.assert_array_equal(
+        dynamics["time"].values,
+        np.array(
+            [np.datetime64("2026-07-15T06:00") + np.timedelta64(lead, "h") for lead in leads]
+        ),
+    )
+    dynamics.close()
 
 
 def test_infer_forecast_cycle_from_written_products(tmp_path):

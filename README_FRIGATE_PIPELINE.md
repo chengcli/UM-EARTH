@@ -258,6 +258,45 @@ The current one-off May 25 run is captured by:
 /home/chengcli/scix/workspace/UM-EARTH/scripts/run_pte1b_20260525_refined_78h_2gpu_refine18.sh
 ```
 
+## HRES Delivery Files With Hourly Boundary Updates
+
+The operational HRES delivery directory contains one mixed GRIB file per
+forecast lead:
+
+```text
+/data00/2025.FRIGATE/ECMWF_prediction_data/HRES/
+uom_a1_ifs-ens-cf_od_oper_fc_20260715T060000Z_20260716T010000Z_19h
+```
+
+Forecast preparation auto-detects this delivery format in addition to the
+legacy paired `ifs_<date>_<cycle>_{pl,sfc}.grib2` format. The selected forecast
+times are embedded in each prepared tensor as `forecast_time_seconds`, so the
+runtime does not assume that every input slice has the same interval.
+
+The July 15 06 UTC pte1b run uses:
+
+* HRES leads `0, 6, 12, 18, 19, ..., 78`
+* staged refinement and ghost updates at 06h, 12h, and 18h
+* hourly lateral ghost-zone refreshes at 19h through 78h
+* a 60-hour final segment, for 78 forecast hours in total
+* two GPUs with `DEVICE=cuda` and `torchrun --nproc-per-node=2`
+
+Prepare, smoke-test, and launch the run with:
+
+```bash
+/home/chengcli/scix/workspace/UM-EARTH/scripts/run_pte1b_20260715_hres06_refined_78h_2gpu.sh
+```
+
+The run is written under:
+
+```text
+/data00/2025.FRIGATE/runs/pte1b-2026-07-15-hres06
+```
+
+Snapy owns device selection and distributed communication in this workflow.
+The YAML `distribute` section contains mesh topology only; launchers set
+`DEVICE=cuda`, while `LOCAL_RANK` supplied by `torchrun` selects each GPU.
+
 It prepares and launches:
 
 * forecast source: `/home/chengcli/data/2025.FRIGATE/ECWMF_prediction_data/20260525`

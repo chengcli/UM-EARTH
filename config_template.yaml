@@ -62,7 +62,6 @@ geometry:
   center_longitude: {center_longitude}  # degrees (negative = west, positive = east)
 
 distribute:
-  backend: nccl
   layout: slab
   nb2: {nb2}
   nb3: {nb3}

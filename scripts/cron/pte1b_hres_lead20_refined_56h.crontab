@@ -1,0 +1,2 @@
+CRON_TZ=America/Detroit
+0 4 * * * /usr/bin/flock -n /tmp/pte1b_hres_lead20_refined_56h.lock /bin/bash /home/chengcli/scix/workspace/UM-EARTH/scripts/run_daily_pte1b_hres_lead20_refined_56h.sh >> /data00/2025.FRIGATE/cron/pte1b_daily_hres_lead20_refined_56h.log 2>&1

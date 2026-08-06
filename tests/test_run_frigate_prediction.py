@@ -581,6 +581,88 @@ def test_run_staged_ghost_schedule_refines_at_18h_by_default(monkeypatch):
     ]
 
 
+def test_prediction_ghost_forcing_selects_hourly_post_spinup_states(monkeypatch):
+    module = load_module()
+    captured = {}
+    times = (0.0, 21600.0, 43200.0, 64800.0, 68400.0, 72000.0, 75600.0)
+    states = [torch.full((2, 2, 2, 2), index, dtype=torch.float64) for index in range(len(times))]
+
+    def fake_run_simulation(*args, **kwargs):
+        captured["schedule"] = kwargs["forcing_schedule"]
+        captured["states"] = kwargs["forcing_states"]
+        return args[3], args[4] + args[5]
+
+    monkeypatch.setattr(module, "run_simulation", fake_run_simulation)
+    ctx = SimpleNamespace(
+        mesh=SimpleNamespace(blocks=[SimpleNamespace(cycle=lambda: 7)]),
+        thermo_x="thermo",
+        kinet="kinet",
+        block_vars={"hydro_u": torch.zeros((2, 2, 2, 2))},
+        current_time=64800.0,
+        precip_indices=(),
+        solar_heating=None,
+        forcing_times_seconds=times,
+        ecmwf_hydro_u=states,
+    )
+
+    module.run_prediction_stage_with_ghost_forcing(ctx, 10800.0)
+
+    assert captured["schedule"].times_seconds == (68400.0, 72000.0, 75600.0)
+    assert [int(state.flatten()[0]) for state in captured["states"]] == [4, 5, 6]
+    assert ctx.current_time == 75600.0
+
+
+def test_prediction_ghost_forcing_rejects_insufficient_boundary_coverage():
+    module = load_module()
+    ctx = SimpleNamespace(
+        current_time=64800.0,
+        forcing_times_seconds=(0.0, 21600.0, 43200.0, 64800.0, 68400.0),
+        ecmwf_hydro_u=[torch.zeros(1) for _ in range(5)],
+    )
+
+    try:
+        module.run_prediction_stage_with_ghost_forcing(ctx, 7200.0)
+    except ValueError as exc:
+        assert "do not cover" in str(exc)
+    else:
+        raise AssertionError("Expected insufficient boundary coverage to fail")
+
+
+def test_staged_prediction_duration_absorbs_spinup_overshoot():
+    module = load_module()
+    args = SimpleNamespace(
+        refinement_mode="staged",
+        spinup_chunk_duration=21600.0,
+        prediction_duration=216000.0,
+        forecast_end_time_seconds=None,
+    )
+    ctx = SimpleNamespace(
+        current_time=64801.068613154726,
+        is_runtime_restart=False,
+    )
+
+    remaining = module.remaining_prediction_duration(args, ctx)
+
+    assert remaining == 280800.0 - ctx.current_time
+    assert ctx.current_time + remaining == 280800.0
+
+
+def test_absolute_forecast_end_resumes_from_runtime_restart():
+    module = load_module()
+    args = SimpleNamespace(
+        refinement_mode="staged",
+        spinup_chunk_duration=21600.0,
+        prediction_duration=216000.0,
+        forecast_end_time_seconds=280800.0,
+    )
+    ctx = SimpleNamespace(
+        current_time=64801.068613154726,
+        is_runtime_restart=True,
+    )
+
+    assert module.remaining_prediction_duration(args, ctx) == 215998.93138684527
+
+
 def test_run_forecast_uses_staged_ghost_path(monkeypatch):
     module = load_module()
     calls = []
@@ -614,8 +696,6 @@ def test_run_forecast_uses_staged_ghost_path(monkeypatch):
     monkeypatch.setattr(module, "run_prediction_stage", fake_prediction)
     monkeypatch.setattr(module, "run_prediction_stage_with_ghost_forcing", fake_prediction_ghost)
     monkeypatch.setattr(module, "finalize_forecast", fake_finalize)
-    monkeypatch.setattr(module.dist, "is_available", lambda: False)
-    monkeypatch.setattr(module.dist, "is_initialized", lambda: False)
 
     args = SimpleNamespace(
         refinement_mode="staged",
@@ -678,8 +758,6 @@ def test_run_forecast_runtime_restart_skips_spinup_and_hydrostatic(monkeypatch):
     monkeypatch.setattr(module, "run_prediction_stage", fake_prediction)
     monkeypatch.setattr(module, "run_prediction_stage_with_ghost_forcing", fake_prediction_ghost)
     monkeypatch.setattr(module, "finalize_forecast", fake_finalize)
-    monkeypatch.setattr(module.dist, "is_available", lambda: False)
-    monkeypatch.setattr(module.dist, "is_initialized", lambda: False)
 
     args = SimpleNamespace(
         input_dir="pte1b.final.restart",
@@ -730,8 +808,6 @@ def test_run_forecast_uses_low_resolution_ghost_path(monkeypatch):
     monkeypatch.setattr(module, "run_prediction_stage", fake_prediction)
     monkeypatch.setattr(module, "run_prediction_stage_with_ghost_forcing", fake_prediction_ghost)
     monkeypatch.setattr(module, "finalize_forecast", fake_finalize)
-    monkeypatch.setattr(module.dist, "is_available", lambda: False)
-    monkeypatch.setattr(module.dist, "is_initialized", lambda: False)
 
     args = SimpleNamespace(
         refinement_mode="none",

@@ -7,10 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import snapy
 import torch
-import torch.distributed as dist
-import torch.distributed.distributed_c10d as dist_c10d
 import torch.nn.functional as F
 import yaml
 from kintera import Kinetics, KineticsOptions, ThermoX
@@ -35,6 +32,7 @@ class ForecastContext:
     device: torch.device
     block_vars: dict[str, torch.Tensor]
     ecmwf_hydro_u: list[torch.Tensor]
+    forcing_times_seconds: tuple[float, ...]
     stage_topography: list[dict[str, torch.Tensor]]
     precip_indices: tuple[int, ...]
     current_time: float = 0.0
@@ -45,8 +43,8 @@ class ForecastContext:
 
 @dataclass(frozen=True)
 class ForcingSchedule:
-    interval_seconds: float
-    next_index: int = 1
+    times_seconds: tuple[float, ...]
+    next_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -124,8 +122,6 @@ def resolve_restart_file(input_path: str) -> Path:
 
 
 def current_rank() -> int:
-    if dist.is_available() and dist.is_initialized():
-        return dist.get_rank()
     return int(os.environ.get("RANK", "0"))
 
 
@@ -316,6 +312,7 @@ def precipitation_tracer_indices(config_file: str) -> tuple[int, ...]:
 def load_solar_heating_config(
     config_file: str,
     sensible_heat_flux_w_m2: float,
+    forecast_start_time_utc: str | None = None,
 ) -> SolarHeatingConfig | None:
     if sensible_heat_flux_w_m2 <= 0.0:
         return None
@@ -324,11 +321,19 @@ def load_solar_heating_config(
         config = yaml.safe_load(stream)
 
     geometry = config["geometry"]
-    start_date = config["integration"]["start-date"]
-    if hasattr(start_date, "year"):
-        start_time_utc = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+    if forecast_start_time_utc is not None:
+        normalized = forecast_start_time_utc.strip().replace("Z", "+00:00")
+        start_time_utc = datetime.fromisoformat(normalized)
+        if start_time_utc.tzinfo is None:
+            start_time_utc = start_time_utc.replace(tzinfo=UTC)
+        else:
+            start_time_utc = start_time_utc.astimezone(UTC)
     else:
-        start_time_utc = datetime.strptime(str(start_date), "%Y-%m-%d").replace(tzinfo=UTC)
+        start_date = config["integration"]["start-date"]
+        if hasattr(start_date, "year"):
+            start_time_utc = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+        else:
+            start_time_utc = datetime.strptime(str(start_date), "%Y-%m-%d").replace(tzinfo=UTC)
 
     return SolarHeatingConfig(
         start_time_utc=start_time_utc,
@@ -338,60 +343,26 @@ def load_solar_heating_config(
     )
 
 
-def init_dist(backend: str, requested_device: str = "auto") -> torch.device:
-    import os
-
-    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-    os.environ.setdefault("MASTER_PORT", "29501")
-    os.environ.setdefault("RANK", "0")
-    os.environ.setdefault("WORLD_SIZE", "1")
-    os.environ.setdefault("LOCAL_RANK", os.environ["RANK"])
-
-    local_rank = int(os.environ["LOCAL_RANK"])
-    if requested_device == "cpu":
-        backend = "gloo"
-
-    if backend == "gloo":
-        dist.init_process_group(backend="gloo", init_method="env://")
-        device = torch.device("cpu")
-    elif backend == "nccl":
-        if requested_device == "cpu":
-            dist.init_process_group(backend="gloo", init_method="env://")
-            device = torch.device("cpu")
-        else:
-            if not torch.cuda.is_available():
-                raise RuntimeError("NCCL backend requires CUDA")
-            torch.cuda.set_device(local_rank)
-            device = torch.device(f"cuda:{local_rank}")
-            dist.init_process_group(
-                backend="cpu:gloo,cuda:nccl", device_id=device, init_method="env://"
-            )
-    else:
-        raise ValueError(f"Unsupported backend: {backend}")
-
-    snapy.distributed.set_process_group(dist_c10d._get_default_group())
-    return device
-
-
 def create_mesh(
     config_file: str,
     output_dir: str,
     requested_device: str = "auto",
 ):
+    if requested_device != "auto":
+        os.environ["DEVICE"] = requested_device
     options = MeshOptions.from_yaml(config_file, verbose=False)
     options.block().output_dir(str(Path(output_dir).resolve()))
     options.block().basename(Path(config_file).stem)
 
-    if requested_device == "cpu":
-        options.block().layout().backend("gloo")
-
-    backend = options.block().layout().backend()
-    device = init_dist(backend, requested_device=requested_device)
-    print_ok("Using device =", device, "with backend =", backend)
-
     mesh = Mesh(options)
-    mesh_device = torch.device(mesh.options.device_str() or str(device))
+    mesh_device = torch.device(mesh.options.device_str())
     mesh.to(mesh_device)
+    print_ok(
+        "Using device =",
+        mesh_device,
+        "with snapy backend =",
+        options.block().layout().backend(),
+    )
     for block in mesh.blocks:
         block.set_user_output_func(call_user_output)
 
@@ -487,12 +458,52 @@ def load_time_series_inputs(
     topography_files: dict[str, Path],
     device: torch.device,
 ):
-    time_slices = [load_restart_slice(restart_file, index=n, device=device) for n in range(4)]
+    time_slices, forcing_times_seconds = load_forecast_state_inputs(
+        restart_file,
+        device,
+    )
     topography = {
         label: load_topography_module(path, device=device)
         for label, path in topography_files.items()
     }
-    return time_slices, topography
+    return time_slices, forcing_times_seconds, topography
+
+
+def load_forecast_state_inputs(
+    restart_file: Path,
+    device: torch.device,
+) -> tuple[list[dict[str, torch.Tensor]], tuple[float, ...]]:
+    module = load_ranked_restart_module(restart_file, current_rank())
+    buffers = dict(module.named_buffers(recurse=True))
+    if "hydro_w" not in buffers:
+        raise ValueError(f"Prepared restart input has no hydro_w buffer: {restart_file}")
+    hydro_w = buffers["hydro_w"]
+    time_slices = [
+        {"hydro_w": hydro_w[index].to(device).to(torch.double)}
+        for index in range(hydro_w.shape[0])
+    ]
+    if "forecast_time_seconds" in buffers:
+        forcing_times_seconds = tuple(
+            float(value) for value in buffers["forecast_time_seconds"].detach().cpu().tolist()
+        )
+    elif hydro_w.shape[0] == 4:
+        forcing_times_seconds = (0.0, 21600.0, 43200.0, 64800.0)
+    else:
+        raise ValueError(
+            "Prepared restart input lacks forecast_time_seconds metadata and does not "
+            "match the legacy four-slice 0/6/12/18 contract"
+        )
+    if len(forcing_times_seconds) != len(time_slices):
+        raise ValueError(
+            "Forecast time metadata length does not match hydro_w time dimension: "
+            f"{len(forcing_times_seconds)} vs {len(time_slices)}"
+        )
+    if any(
+        later <= earlier
+        for earlier, later in zip(forcing_times_seconds, forcing_times_seconds[1:])
+    ):
+        raise ValueError(f"Forecast times must be strictly increasing: {forcing_times_seconds}")
+    return time_slices, forcing_times_seconds
 
 
 def selected_topography_labels(
@@ -708,10 +719,10 @@ def apply_surface_heating(
     volumetric_heating = flux / max(dz, 1.0e-12)
     block_vars["hydro_u"][kIPR] += volumetric_heating.unsqueeze(-1) * surface.to(block_vars["hydro_u"].dtype) * dt
 
-def next_forcing_time(schedule: ForcingSchedule, available_slices: int) -> float | None:
-    if schedule.next_index >= available_slices:
+def next_forcing_time(schedule: ForcingSchedule) -> float | None:
+    if schedule.next_index >= len(schedule.times_seconds):
         return None
-    return schedule.next_index * schedule.interval_seconds
+    return schedule.times_seconds[schedule.next_index]
 
 
 def clone_with_lateral_ghost_zones(
@@ -844,7 +855,7 @@ def run_simulation(mesh: Mesh,
         mesh.set_cycle(cycle)
         dt = mesh.max_time_step(mesh_vars)
         if forcing_schedule is not None and forcing_states is not None:
-            refresh_time = next_forcing_time(forcing_schedule, len(forcing_states))
+            refresh_time = next_forcing_time(forcing_schedule)
             if refresh_time is not None:
                 dt = min(dt, max(refresh_time - current_time, 0.0))
         mesh.print_cycle_info(mesh_vars, current_time, dt)
@@ -877,12 +888,18 @@ def run_simulation(mesh: Mesh,
         current_time += dt
         mesh.make_outputs(mesh_vars, current_time)
         if forcing_schedule is not None and forcing_states is not None:
-            refresh_time = next_forcing_time(forcing_schedule, len(forcing_states))
+            refresh_time = next_forcing_time(forcing_schedule)
             if refresh_time is not None and current_time >= refresh_time - 1.0e-9:
-                forcing_index = min(forcing_schedule.next_index, len(forcing_states) - 1)
-                apply_ghost_zone_forcing(mesh, block_vars, forcing_states[forcing_index])
+                forcing_index = forcing_schedule.next_index
+                nghost = mesh.blocks[0].options.coord().nghost()
+                target_hydro_u = refine_boundary_state_to_match(
+                    forcing_states[forcing_index],
+                    block_vars["hydro_u"].shape,
+                    nghost,
+                )
+                apply_ghost_zone_forcing(mesh, block_vars, target_hydro_u)
                 forcing_schedule = ForcingSchedule(
-                    interval_seconds=forcing_schedule.interval_seconds,
+                    times_seconds=forcing_schedule.times_seconds,
                     next_index=forcing_schedule.next_index + 1,
                 )
 
@@ -998,10 +1015,29 @@ def run_staged_ghost_schedule(
     precip_indices: tuple[int, ...],
     solar_heating: SolarHeatingConfig | None = None,
     refine_at_18h: bool = True,
+    forcing_times_seconds: tuple[float, ...] | None = None,
 ):
-    if len(ecmwf_hydro_u) < 4:
+    if forcing_times_seconds is None:
+        forcing_times_seconds = tuple(index * chunk_duration for index in range(len(ecmwf_hydro_u)))
+    if len(forcing_times_seconds) != len(ecmwf_hydro_u):
         raise ValueError(
-            f"Staged ghost forcing requires 4 ECMWF slices, found {len(ecmwf_hydro_u)}"
+            "Forecast forcing times and states have different lengths: "
+            f"{len(forcing_times_seconds)} vs {len(ecmwf_hydro_u)}"
+        )
+    time_to_index = {
+        round(float(forcing_time), 6): index
+        for index, forcing_time in enumerate(forcing_times_seconds)
+    }
+    staged_times = tuple(index * chunk_duration for index in range(4))
+    missing_staged_times = [
+        forcing_time
+        for forcing_time in staged_times
+        if round(float(forcing_time), 6) not in time_to_index
+    ]
+    if missing_staged_times:
+        raise ValueError(
+            "Staged ghost forcing requires forecast states at 0/6/12/18 hours; "
+            f"missing seconds {missing_staged_times}"
         )
     required_stage_count = 4 if refine_at_18h else 3
     if len(stage_topography) < required_stage_count:
@@ -1038,8 +1074,9 @@ def run_staged_ghost_schedule(
             )
 
         nghost = mesh.blocks[0].options.coord().nghost()
+        forcing_index = time_to_index[round(float(target_time), 6)]
         target_hydro_u = refine_boundary_state_to_match(
-            ecmwf_hydro_u[index], block_vars["hydro_u"].shape, nghost
+            ecmwf_hydro_u[forcing_index], block_vars["hydro_u"].shape, nghost
         )
         block_vars = apply_ghost_zone_forcing(mesh, block_vars, target_hydro_u)
         end_clock = time.time()
@@ -1108,7 +1145,6 @@ def refine_mesh(
     options = MeshOptions.from_yaml(str(refined_config), verbose=False)
     options.block().output_dir(old_block.options.output_dir())
     options.block().basename(old_block.options.basename())
-    options.block().layout().backend(old_block.options.layout().backend())
     new_mesh = Mesh(options)
     new_mesh.to(device)
     for block in new_mesh.blocks:
@@ -1205,6 +1241,30 @@ def initialize_block_from_runtime_restart(
     return block.initialize_from_restart(str(restart_file))
 
 
+def convert_boundary_states_to_conserved(
+    time_slices: list[dict[str, torch.Tensor]],
+    config_file: str,
+    output_dir: str,
+    device: torch.device,
+) -> list[torch.Tensor]:
+    """Convert boundary W fields with an EOS whose mesh matches those fields."""
+    options = MeshOptions.from_yaml(config_file, verbose=False)
+    options.block().output_dir(str(Path(output_dir).resolve()))
+    options.block().basename(f"{Path(config_file).stem}.boundary")
+    boundary_mesh = Mesh(options)
+    boundary_mesh.to(device)
+    boundary_eos = boundary_mesh.blocks[0].module("hydro.eos")
+    conserved = [
+        boundary_eos.compute("W->U", (slice_vars["hydro_w"],)).detach()
+        for slice_vars in time_slices
+    ]
+    print_ok(
+        "Converted forecast boundary states using mesh configuration",
+        config_file,
+    )
+    return conserved
+
+
 def build_runtime_restart_context(
     args: argparse.Namespace,
     restart_file: Path,
@@ -1225,6 +1285,28 @@ def build_runtime_restart_context(
     if "topo" in block_vars:
         block_vars["topo"] = block_vars["topo"].to(torch.bool)
     block_vars = attach_surface_forcing_metadata(block, block_vars, solar_heating)
+    ecmwf_hydro_u: list[torch.Tensor] = []
+    forcing_times_seconds: tuple[float, ...] = ()
+    boundary_input = getattr(args, "boundary_input", None)
+    if boundary_input is not None:
+        boundary_restart = resolve_restart_file(boundary_input)
+        time_slices, forcing_times_seconds = load_forecast_state_inputs(
+            boundary_restart,
+            device,
+        )
+        boundary_config = getattr(args, "boundary_config", None) or args.config
+        ecmwf_hydro_u = convert_boundary_states_to_conserved(
+            time_slices,
+            boundary_config,
+            args.output_dir,
+            device,
+        )
+        print_ok(
+            "Loaded",
+            len(ecmwf_hydro_u),
+            "forecast boundary states from",
+            boundary_restart,
+        )
     print_ok(
         "Loaded runtime restart from",
         restart_file,
@@ -1238,7 +1320,8 @@ def build_runtime_restart_context(
         kinet=kinet,
         device=device,
         block_vars=block_vars,
-        ecmwf_hydro_u=[],
+        ecmwf_hydro_u=ecmwf_hydro_u,
+        forcing_times_seconds=forcing_times_seconds,
         stage_topography=[],
         precip_indices=precip_indices,
         current_time=current_time,
@@ -1265,7 +1348,11 @@ def log_loaded_inputs(
 def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
     restart_file = resolve_restart_file(args.input_dir)
     precip_indices = precipitation_tracer_indices(args.config)
-    solar_heating = load_solar_heating_config(args.config, args.surface_heat_flux)
+    solar_heating = load_solar_heating_config(
+        args.config,
+        args.surface_heat_flux,
+        args.forecast_start_time_utc,
+    )
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     mesh, thermo_x, kinet, device = create_mesh(
@@ -1294,7 +1381,7 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
         str(topography_root),
         required_labels=selected_topography_labels(args.refinement_mode, args.topography_stage),
     )
-    time_slices, topography_modules = load_time_series_inputs(
+    time_slices, forcing_times_seconds, topography_modules = load_time_series_inputs(
         restart_file, topography_files, device
     )
     block_vars = time_slices[0]
@@ -1317,6 +1404,7 @@ def build_forecast_context(args: argparse.Namespace) -> ForecastContext:
         device=device,
         block_vars=block_vars,
         ecmwf_hydro_u=ecmwf_hydro_u,
+        forcing_times_seconds=forcing_times_seconds,
         stage_topography=stage_topography,
         precip_indices=precip_indices,
         current_time=current_time,
@@ -1415,6 +1503,7 @@ def run_spinup_stage_with_ghost_forcing(
         ctx.precip_indices,
         solar_heating=ctx.solar_heating,
         refine_at_18h=ctx.refine_at_18h,
+        forcing_times_seconds=ctx.forcing_times_seconds,
     )
     end_clock = time.time()
     print_ok(
@@ -1450,8 +1539,33 @@ def run_prediction_stage(ctx: ForecastContext, duration: float) -> None:
 def run_prediction_stage_with_ghost_forcing(
     ctx: ForecastContext,
     duration: float,
-    forcing_interval_seconds: float,
+    forcing_interval_seconds: float | None = None,
 ) -> None:
+    if ctx.forcing_times_seconds:
+        all_times = ctx.forcing_times_seconds
+    elif forcing_interval_seconds is not None:
+        all_times = tuple(
+            index * forcing_interval_seconds
+            for index in range(len(ctx.ecmwf_hydro_u))
+        )
+    else:
+        raise ValueError("Ghost forcing requires forecast timestamps or a forcing interval")
+
+    forecast_end_time = ctx.current_time + duration
+    if not all_times or all_times[-1] < forecast_end_time - 1.0e-6:
+        raise ValueError(
+            "Forecast boundary data do not cover the requested prediction: "
+            f"last boundary={all_times[-1] if all_times else 'none'}s, "
+            f"requested end={forecast_end_time}s"
+        )
+    selected = [
+        (forcing_time, state)
+        for forcing_time, state in zip(all_times, ctx.ecmwf_hydro_u, strict=True)
+        if ctx.current_time < forcing_time <= forecast_end_time + 1.0e-6
+    ]
+    forcing_times = tuple(item[0] for item in selected)
+    forcing_states = [item[1] for item in selected]
+
     start_clock = time.time()
     mesh_vars, ctx.current_time = run_simulation(
         ctx.mesh,
@@ -1462,8 +1576,8 @@ def run_prediction_stage_with_ghost_forcing(
         duration,
         ctx.precip_indices,
         solar_heating=ctx.solar_heating,
-        forcing_schedule=ForcingSchedule(interval_seconds=forcing_interval_seconds),
-        forcing_states=ctx.ecmwf_hydro_u,
+        forcing_schedule=ForcingSchedule(times_seconds=forcing_times),
+        forcing_states=forcing_states,
     )
     ctx.block_vars = mesh_vars[0]
     end_clock = time.time()
@@ -1480,12 +1594,41 @@ def finalize_forecast(ctx: ForecastContext) -> None:
     print_ok("Simulation finalized at time = ", ctx.current_time, " seconds.")
 
 
+def remaining_prediction_duration(
+    args: argparse.Namespace,
+    ctx: ForecastContext,
+) -> float:
+    if not hasattr(ctx, "current_time"):
+        return float(args.prediction_duration)
+    forecast_end_time_seconds = getattr(args, "forecast_end_time_seconds", None)
+    if forecast_end_time_seconds is not None:
+        target_end_time = float(forecast_end_time_seconds)
+    elif args.refinement_mode == "staged" and not getattr(ctx, "is_runtime_restart", False):
+        target_end_time = 3.0 * args.spinup_chunk_duration + args.prediction_duration
+    else:
+        return float(args.prediction_duration)
+    if target_end_time < ctx.current_time - 1.0e-6:
+        raise ValueError(
+            f"Forecast target end {target_end_time}s precedes current restart time "
+            f"{ctx.current_time}s"
+        )
+    return max(target_end_time - ctx.current_time, 0.0)
+
+
 def run_forecast(args: argparse.Namespace) -> None:
     ctx = None
     try:
         ctx = build_forecast_context(args)
         if getattr(ctx, "is_runtime_restart", False):
-            run_prediction_stage(ctx, args.prediction_duration)
+            duration = remaining_prediction_duration(args, ctx)
+            if args.forcing_mode == "ghost" and getattr(ctx, "ecmwf_hydro_u", []):
+                run_prediction_stage_with_ghost_forcing(
+                    ctx,
+                    duration,
+                    args.forcing_interval_seconds,
+                )
+            else:
+                run_prediction_stage(ctx, duration)
             finalize_forecast(ctx)
             return
         run_hydrostatic_adjustment(ctx, args.hydrostatic_duration)
@@ -1496,7 +1639,18 @@ def run_forecast(args: argparse.Namespace) -> None:
                 )
             else:
                 run_spinup_stage(ctx, args.config, args.spinup_chunk_duration)
-            run_prediction_stage(ctx, args.prediction_duration)
+            prediction_duration = remaining_prediction_duration(args, ctx)
+            if args.forcing_mode == "ghost" and any(
+                forcing_time > ctx.current_time
+                for forcing_time in getattr(ctx, "forcing_times_seconds", ())
+            ):
+                run_prediction_stage_with_ghost_forcing(
+                    ctx,
+                    prediction_duration,
+                    args.forcing_interval_seconds,
+                )
+            else:
+                run_prediction_stage(ctx, prediction_duration)
         elif args.forcing_mode == "ghost":
             run_prediction_stage_with_ghost_forcing(
                 ctx, args.prediction_duration, args.forcing_interval_seconds
@@ -1510,9 +1664,6 @@ def run_forecast(args: argparse.Namespace) -> None:
                 ctx.mesh.finalize([ctx.block_vars], ctx.current_time)
             except Exception:
                 pass
-        if dist.is_available() and dist.is_initialized():
-            dist.destroy_process_group()
-
 def main():
     parser = argparse.ArgumentParser(description="Run hydrodynamic simulation.")
     parser.add_argument(
@@ -1525,6 +1676,22 @@ def main():
         help=(
             "prepared forecast input directory, prepared restart bundle, or a runtime "
             "*.final.restart file to continue an existing prediction."
+        ),
+    )
+    parser.add_argument(
+        "--boundary-input",
+        default=None,
+        help=(
+            "prepared forecast tensor directory or bundle used for ghost forcing "
+            "when continuing from a runtime restart."
+        ),
+    )
+    parser.add_argument(
+        "--boundary-config",
+        default=None,
+        help=(
+            "mesh YAML matching --boundary-input. This is required when a runtime "
+            "restart uses a differently refined mesh."
         ),
     )
     parser.add_argument(
@@ -1591,6 +1758,15 @@ def main():
         default=7 * 86400.0, help="duration in seconds for the final forecast segment."
     )
     parser.add_argument(
+        "--forecast-end-time-seconds",
+        type=float,
+        default=None,
+        help=(
+            "absolute forecast-clock end time. When set, the runner advances only "
+            "from the current restart time to this horizon."
+        ),
+    )
+    parser.add_argument(
         "--device", type=str,
         default="auto", choices=["auto", "cpu", "cuda"],
         help="execution device override."
@@ -1600,6 +1776,14 @@ def main():
         type=float,
         default=200.0,
         help="peak daytime sensible heat flux H in W/m^2; applied as H*max(cos(zenith),0) on exposed surface cells.",
+    )
+    parser.add_argument(
+        "--forecast-start-time-utc",
+        default=None,
+        help=(
+            "UTC initialization time for time-dependent forcing, for example "
+            "2026-07-15T06:00:00Z. Defaults to midnight on integration.start-date."
+        ),
     )
     args = parser.parse_args()
 

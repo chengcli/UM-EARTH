@@ -80,6 +80,32 @@ def save_tensors(tensor_map: Dict[str, torch.Tensor], filename: str) -> None:
     scripted.save(filename)
 
 
+def forecast_time_seconds_from_netcdf(nc: Dataset) -> np.ndarray:
+    if "time" not in nc.variables:
+        raise ValueError("NetCDF input is missing the time coordinate")
+    time_var = nc.variables["time"]
+    values = np.asarray(time_var[:], dtype=np.float64)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError(f"Expected a non-empty 1-D time coordinate, found {values.shape}")
+
+    units = str(getattr(time_var, "units", "")).lower()
+    unit_name = units.split(" since", 1)[0].strip()
+    scale = {
+        "second": 1.0,
+        "seconds": 1.0,
+        "minute": 60.0,
+        "minutes": 60.0,
+        "hour": 3600.0,
+        "hours": 3600.0,
+        "day": 86400.0,
+        "days": 86400.0,
+    }.get(unit_name, 1.0)
+    offsets = (values - values[0]) * scale
+    if np.any(np.diff(offsets) <= 0):
+        raise ValueError(f"Forecast times must be strictly increasing, found {offsets}")
+    return offsets
+
+
 BLOCK_PATTERN = re.compile(r"^(?P<stem>.+)_block_(?P<i2>\d+)_(?P<i3>\d+)$")
 
 
@@ -260,6 +286,7 @@ def convert_netcdf_to_tensor(
         n_x1 = len(nc.dimensions['x1'])
         n_x2 = len(nc.dimensions['x2'])
         n_x3 = len(nc.dimensions['x3'])
+        forecast_time_seconds = forecast_time_seconds_from_netcdf(nc)
         
         print(f"  Dimensions: time={n_time}, x1={n_x1}, x2={n_x2}, x3={n_x3}")
         
@@ -397,7 +424,10 @@ def convert_netcdf_to_tensor(
     hydro_w_tensor = torch.from_numpy(hydro_w_np.copy())
     
     # Save to file
-    tensor_map = {'hydro_w': hydro_w_tensor}
+    tensor_map = {
+        'hydro_w': hydro_w_tensor,
+        'forecast_time_seconds': torch.from_numpy(forecast_time_seconds.copy()),
+    }
     save_tensors(tensor_map, output_file)
     
     print(f"  Saved to {output_file}")

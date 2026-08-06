@@ -30,11 +30,17 @@ def load_convert_module():
     return module
 
 
-def save_part(path: Path, hydro_w: torch.Tensor) -> None:
+def save_part(
+    path: Path,
+    hydro_w: torch.Tensor,
+    forecast_time_seconds: torch.Tensor | None = None,
+) -> None:
     class TensorModule(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.register_buffer("hydro_w", hydro_w)
+            if forecast_time_seconds is not None:
+                self.register_buffer("forecast_time_seconds", forecast_time_seconds)
 
     torch.jit.script(TensorModule()).save(str(path))
 
@@ -106,6 +112,30 @@ def test_load_restart_slice_selects_rank_from_restart_bundle(tmp_path, monkeypat
     block_vars = module.load_restart_slice(restart_file, index=2)
 
     assert torch.equal(block_vars["hydro_w"], torch.ones((8, 2, 2, 2), dtype=torch.float64) * 7.0)
+
+
+def test_load_time_series_inputs_preserves_forecast_times(tmp_path, monkeypatch):
+    module = load_run_module()
+    part = tmp_path / "input.part"
+    hydro_w = torch.arange(10, dtype=torch.float32).reshape(5, 2, 1, 1, 1)
+    times = torch.tensor([0.0, 21600.0, 43200.0, 64800.0, 68400.0])
+    save_part(part, hydro_w, times)
+
+    monkeypatch.setattr(
+        module,
+        "load_topography_module",
+        lambda path, device: {"topography": torch.zeros(1)},
+    )
+    slices, loaded_times, topography = module.load_time_series_inputs(
+        part,
+        {"2p4km": tmp_path / "topo.pt"},
+        torch.device("cpu"),
+    )
+
+    assert loaded_times == tuple(times.tolist())
+    assert len(slices) == 5
+    assert torch.equal(slices[4]["hydro_w"], hydro_w[4].to(torch.double))
+    assert "2p4km" in topography
 
 
 def test_build_topography_field_for_block_uses_block_position():

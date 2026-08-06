@@ -373,6 +373,11 @@ def main():
         default=[0, 6, 12, 18],
         help="Forecast lead hours to extract when --data-source forecast.",
     )
+    parser.add_argument(
+        "--forecast-file-prefix",
+        default=None,
+        help="Restrict HRES forecast ingestion to filenames with this prefix.",
+    )
     
     parser.add_argument(
         '--locations-file',
@@ -475,6 +480,8 @@ def main():
         print(f"Forecast input dir: {args.forecast_input_dir}")
         if args.forecast_cycle:
             print(f"Forecast cycle: {args.forecast_cycle}")
+        if args.forecast_file_prefix:
+            print(f"Forecast file prefix: {args.forecast_file_prefix}")
         print(f"Forecast leads (h): {', '.join(str(hour) for hour in args.forecast_leads)}")
     print()
 
@@ -524,6 +531,11 @@ def main():
                     *(["--cycle", args.forecast_cycle] if args.forecast_cycle else []),
                     "--lead-hours",
                     *(str(hour) for hour in args.forecast_leads),
+                    *(
+                        ["--file-prefix", args.forecast_file_prefix]
+                        if args.forecast_file_prefix
+                        else []
+                    ),
                 ],
                 timeout_seconds=args.timeout,
             )
