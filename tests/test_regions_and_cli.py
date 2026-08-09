@@ -8,7 +8,7 @@ import yaml
 
 from um_earth.cli import main
 from um_earth.configuration import ConfigOptions, EARTH_ROTATION_RATE, render_config
-from um_earth.regions import load_region_from_kml
+from um_earth.regions import RegionDefinition, load_region_from_kml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +37,23 @@ def test_load_region_from_kml():
     assert 38.50 < lat_max < 38.51
 
 
+def test_region_center_is_bounds_midpoint_for_closed_polygon(tmp_path):
+    region = RegionDefinition(
+        region_id="closed",
+        name="Closed polygon",
+        polygon=[
+            [-107.0, 32.8],
+            [-106.0, 32.8],
+            [-106.0, 34.0],
+            [-107.0, 34.0],
+            [-107.0, 32.8],
+        ],
+        source=tmp_path / "closed.kml",
+    )
+
+    assert region.center == {"longitude": -106.5, "latitude": 33.4}
+
+
 def test_render_config_from_kml():
     region = load_region_from_kml(locate_sacramento_kml())
     template = (PROJECT_ROOT / "config_template.yaml").read_text(encoding="utf-8")
@@ -54,7 +71,9 @@ def test_render_config_from_kml():
     )
     parsed = yaml.safe_load(rendered)
 
-    assert parsed["geometry"]["center_latitude"] > 38.49
+    lon_min, lat_min, lon_max, lat_max = region.bounds
+    assert parsed["geometry"]["center_latitude"] == pytest.approx((lat_min + lat_max) / 2.0)
+    assert parsed["geometry"]["center_longitude"] == pytest.approx((lon_min + lon_max) / 2.0)
     assert parsed["integration"]["start-date"].isoformat() == "2025-02-01"
     assert parsed["integration"]["end-date"].isoformat() == "2025-02-02"
     assert parsed["integration"]["cfl"] == 0.9

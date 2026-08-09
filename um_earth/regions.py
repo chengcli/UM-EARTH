@@ -30,11 +30,10 @@ class RegionDefinition:
 
     @property
     def center(self) -> dict[str, float]:
-        lons = [point[0] for point in self.polygon]
-        lats = [point[1] for point in self.polygon]
+        lon_min, lat_min, lon_max, lat_max = self.bounds
         return {
-            "longitude": sum(lons) / len(lons),
-            "latitude": sum(lats) / len(lats),
+            "longitude": (lon_min + lon_max) / 2.0,
+            "latitude": (lat_min + lat_max) / 2.0,
         }
 
     def extents_meters(self) -> dict[str, float]:

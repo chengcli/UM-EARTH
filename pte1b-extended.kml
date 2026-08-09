@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>pte1b-extended</name>
+    <Placemark>
+      <name>pte1b-extended</name>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              -106.7333844860048,32.8,0
+              -106.2667044823808,32.8,0
+              -106.2665524311112,33.87261536177002,0
+              -106.7339770519971,33.87247290321945,0
+              -106.7333844860048,32.8,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+  </Document>
+</kml>

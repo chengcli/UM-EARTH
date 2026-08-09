@@ -32,6 +32,7 @@ from pathlib import Path
 import sys
 import argparse
 import subprocess
+import tempfile
 import requests
 import numpy as np
 import rasterio
@@ -101,25 +102,65 @@ def download_3dep_image_server_tif(bbox, output_file: Path) -> None:
     avg_lat = (lat_min + lat_max) / 2.0
     width_m = (lon_max - lon_min) * 111_000.0 * math.cos(math.radians(avg_lat))
     height_m = (lat_max - lat_min) * 111_000.0
-    width_px = max(256, min(8000, math.ceil(width_m / 10.0)))
-    height_px = max(256, min(8000, math.ceil(height_m / 10.0)))
-
-    params = {
-        "bbox": f"{lon_min},{lat_min},{lon_max},{lat_max}",
-        "bboxSR": 4326,
-        "imageSR": 4326,
-        "format": "tiff",
-        "pixelType": "F32",
-        "size": f"{width_px},{height_px}",
-        "f": "image",
-    }
+    width_px = max(256, math.ceil(width_m / 10.0))
+    height_px = max(256, math.ceil(height_m / 10.0))
     endpoint = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage"
+    max_tile_px = 3000
+    tile_cols = math.ceil(width_px / max_tile_px)
+    tile_rows = math.ceil(height_px / max_tile_px)
 
     print("\n[Fallback] Downloading DEM from USGS 3DEP ImageServer...")
-    print(f"Image size: {width_px} x {height_px}")
-    response = requests.get(endpoint, params=params, timeout=300)
-    response.raise_for_status()
-    output_file.write_bytes(response.content)
+    print(
+        f"Image size: {width_px} x {height_px}; "
+        f"requesting {tile_cols} x {tile_rows} tiles"
+    )
+
+    with tempfile.TemporaryDirectory(
+        dir=output_file.parent,
+        prefix=f".{output_file.stem}-",
+    ) as tmp_dir:
+        tile_paths = []
+        for row in range(tile_rows):
+            tile_south = lat_min + (lat_max - lat_min) * row / tile_rows
+            tile_north = lat_min + (lat_max - lat_min) * (row + 1) / tile_rows
+            tile_height = math.ceil(height_px / tile_rows)
+            for col in range(tile_cols):
+                tile_west = lon_min + (lon_max - lon_min) * col / tile_cols
+                tile_east = lon_min + (lon_max - lon_min) * (col + 1) / tile_cols
+                tile_width = math.ceil(width_px / tile_cols)
+                params = {
+                    "bbox": f"{tile_west},{tile_south},{tile_east},{tile_north}",
+                    "bboxSR": 4326,
+                    "imageSR": 4326,
+                    "format": "tiff",
+                    "pixelType": "F32",
+                    "size": f"{tile_width},{tile_height}",
+                    "f": "image",
+                }
+                tile_number = row * tile_cols + col + 1
+                print(f"  downloading tile {tile_number}/{tile_rows * tile_cols}", flush=True)
+                response = requests.get(endpoint, params=params, timeout=300)
+                response.raise_for_status()
+                tile_path = Path(tmp_dir) / f"tile_{row:03d}_{col:03d}.tif"
+                tile_path.write_bytes(response.content)
+                tile_paths.append(tile_path)
+
+        datasets = [rasterio.open(path) for path in tile_paths]
+        try:
+            mosaic, transform = merge(datasets)
+            profile = datasets[0].profile.copy()
+            profile.update(
+                height=mosaic.shape[1],
+                width=mosaic.shape[2],
+                transform=transform,
+                count=1,
+            )
+            with rasterio.open(output_file, "w", **profile) as dst:
+                dst.write(mosaic)
+        finally:
+            for dataset in datasets:
+                dataset.close()
+
     print("Saved merged DEM:", output_file.resolve())
 
 def save_tensors(tensor_map: dict[str, torch.Tensor], filename: str):
